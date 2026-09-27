@@ -40,7 +40,7 @@ interface StudyRoomContextType {
   roomError: string | null;
   clearRoomError: () => void;
 
-  createRoom: (roomName: string, category?: string) => Promise<void>;
+  createRoom: (roomName: string, category?: string, creatorName?: string) => Promise<void>;
   joinRoom: (roomId: string) => Promise<void>;
   leaveRoom: () => void;
   navigateTo: (path: string) => void;
@@ -118,9 +118,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [modalType, setModalType] = useState<ModalType>('none');
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+  const [pendingRoomCreation, setPendingRoomCreation] = useState<{ roomName: string; category?: string } | null>(null);
 
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
@@ -178,6 +179,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const closeModal = () => {
     setModalType('none');
+    setPendingRoomCreation(null);
     if (currentPath === '/create-room' || currentPath === '/join') {
       if (!activeRoom) {
         navigate('/');
@@ -274,8 +276,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('join-room');
     } else if (urlRoomId) {
-      // If already joined this active room with active connection, don't re-validate
-      if (activeRoom && activeRoom.id.toUpperCase() === urlRoomId.toUpperCase() && currentUser.name) {
+      // If already active in this room, do not re-fetch
+      if (activeRoom && activeRoom.id.toUpperCase() === urlRoomId.toUpperCase()) {
         return;
       }
 
@@ -299,14 +301,28 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           return;
         }
 
-        // Room exists! Check user name
+        // Room exists! Immediately set activeRoom so UI renders the room
+        setActiveRoom({
+          id: roomData.id,
+          name: roomData.name,
+          category: roomData.category || 'عمومی',
+          createdAt: roomData.createdAt,
+          hostName: roomData.ownerName,
+          membersCount: roomData.members?.length || 1,
+        });
+
+        if (roomData.members) {
+          setMembers(mapMembersToUsers(roomData.members));
+        }
+
+        // If user has no name yet, prompt for name
         if (!currentUser.name) {
           setPendingRoomId(roomData.id);
           setModalType('name-entry');
         } else {
           setModalType('none');
           setIsLoadingMessages(true);
-          // Connect to real-time WebSocket room
+          // Connect to real-time room
           chatService.connectToRoom(roomData.id, {
             id: currentUser.id,
             name: currentUser.name,
@@ -322,7 +338,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       };
     } else if (currentPath === '/') {
       setIsLoadingRoom(false);
-      if (modalType !== 'name-entry') {
+      if (modalType !== 'name-entry' && modalType !== 'create-room' && modalType !== 'join-room') {
         setModalType('none');
       }
       if (activeRoom) {
@@ -330,7 +346,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActiveRoom(null);
       }
     }
-  }, [currentPath, urlRoomId, currentUser.name, currentUser.id, currentUser.avatarBg, navigate, showToast, activeRoom, modalType]);
+  }, [currentPath, urlRoomId, currentUser.name, currentUser.id, currentUser.avatarBg, navigate, showToast, activeRoom, modalType, mapMembersToUsers]);
 
   const setUserName = (name: string) => {
     const trimmed = name.trim();
@@ -343,6 +359,15 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
     setCurrentUser(updatedUser);
     localStorage.setItem('studyroom_user_name', trimmed);
+
+    // If there was a pending room creation, fulfill it now!
+    if (pendingRoomCreation) {
+      const { roomName, category } = pendingRoomCreation;
+      setPendingRoomCreation(null);
+      closeModal();
+      createRoom(roomName, category, trimmed);
+      return;
+    }
 
     const targetRoomId = pendingRoomId || urlRoomId;
 
@@ -365,33 +390,69 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         name: trimmed,
         avatarBg: updatedUser.avatarBg,
       });
+    } else {
+      closeModal();
     }
   };
 
-  const createRoom = async (roomName: string, category: string = 'عمومی') => {
-    if (!currentUser.name) {
+  const createRoom = async (roomName: string, category: string = 'عمومی', creatorName?: string) => {
+    let finalUserName = creatorName?.trim() || currentUser.name.trim();
+
+    if (!finalUserName) {
+      setPendingRoomCreation({ roomName, category });
       setModalType('name-entry');
       return;
     }
 
+    let userToUse = currentUser;
+    if (creatorName && creatorName.trim() !== currentUser.name) {
+      userToUse = {
+        ...currentUser,
+        name: creatorName.trim(),
+        avatar: creatorName.trim().charAt(0).toUpperCase(),
+      };
+      setCurrentUser(userToUse);
+      localStorage.setItem('studyroom_user_name', creatorName.trim());
+    }
+
     setIsLoadingRoom(true);
+    setRoomError(null);
+
     try {
       const newRoom = await roomService.createRoom(
-        roomName,
+        roomName.trim(),
         category,
-        currentUser.name,
-        currentUser.id
+        userToUse.name,
+        userToUse.id
       );
+
+      // Immediately set activeRoom so UI renders room instantly
+      const createdRoomModel: Room = {
+        id: newRoom.id,
+        name: newRoom.name,
+        category: newRoom.category || category,
+        createdAt: newRoom.createdAt,
+        hostName: newRoom.ownerName,
+        membersCount: newRoom.members?.length || 1,
+      };
+
+      setActiveRoom(createdRoomModel);
+      if (newRoom.members) {
+        setMembers(mapMembersToUsers(newRoom.members));
+      }
+
       setIsLoadingRoom(false);
-      closeModal();
+      setModalType('none');
+      setPendingRoomCreation(null);
+
       navigate(`/room/${newRoom.id}`);
       showToast(`اتاق «${newRoom.name}» با کد ${newRoom.id} ساخته شد.`);
 
-      setIsLoadingMessages(true);
+      setIsLoadingMessages(false);
       chatService.connectToRoom(newRoom.id, {
-        id: currentUser.id,
-        name: currentUser.name,
-        avatarBg: currentUser.avatarBg,
+        id: userToUse.id,
+        name: userToUse.name,
+        avatarBg: userToUse.avatarBg,
       });
     } catch (err: unknown) {
       setIsLoadingRoom(false);
@@ -427,6 +488,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setPendingRoomId(roomData.id);
       navigate(`/room/${roomData.id}`);
     } else {
+      setActiveRoom({
+        id: roomData.id,
+        name: roomData.name,
+        category: roomData.category || 'عمومی',
+        createdAt: roomData.createdAt,
+        hostName: roomData.ownerName,
+        membersCount: roomData.members?.length || 1,
+      });
       navigate(`/room/${roomData.id}`);
       setIsLoadingMessages(true);
       chatService.connectToRoom(roomData.id, {

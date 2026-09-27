@@ -8,7 +8,6 @@ import type { RoomData, RoomMember, ChatMessage, WSClientMessage, WSServerMessag
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const isProd = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 3000;
 
 const app = express();
@@ -177,7 +176,7 @@ function findRoomCaseInsensitive(rawId: string): RoomData | undefined {
 
   // Search case insensitive or by substring
   for (const [key, r] of rooms.entries()) {
-    if (key.toUpperCase() === norm.toUpperCase()) {
+    if (key.toUpperCase() === norm.toUpperCase() || normalizeRoomId(key) === norm) {
       return r;
     }
   }
@@ -196,7 +195,7 @@ function generateUniqueRoomId(): string {
   return id;
 }
 
-// REST API Endpoints
+// REST API Endpoints (Handled BEFORE static / SPA fallback)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), roomsCount: rooms.size });
 });
@@ -217,7 +216,7 @@ app.get('/api/rooms', (req, res) => {
 app.get('/api/rooms/:roomId', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
-    return res.status(404).json({ error: 'اتاقی با این کد پیدا نشد' });
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
   }
   res.json(room);
 });
@@ -293,7 +292,7 @@ app.post('/api/rooms/sync', (req, res) => {
 app.get('/api/rooms/:roomId/messages', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
-    return res.status(404).json({ error: 'اتاقی با این کد پیدا نشد' });
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
   }
   const messages = roomMessages.get(room.id) || [];
   res.json(messages);
@@ -329,7 +328,7 @@ wss.on('connection', (ws: WebSocket) => {
       if (msg.type === 'join-room') {
         const room = findRoomCaseInsensitive(msg.roomId);
         if (!room) {
-          ws.send(JSON.stringify({ type: 'error', message: 'اتاقی با این کد پیدا نشد' }));
+          ws.send(JSON.stringify({ type: 'error', message: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' }));
           return;
         }
 
@@ -488,8 +487,12 @@ function handleClientLeave(ws: WebSocket) {
   }
 }
 
-// Vite middleware in dev, static in prod + SPA HTML fallback for all routes
+// Vite middleware in dev, static in prod + SPA HTML fallback for all frontend routes
 async function startServer() {
+  const distIndex = path.resolve(__dirname, 'dist', 'index.html');
+  const hasDist = fs.existsSync(distIndex);
+  const isProd = process.env.NODE_ENV === 'production' || hasDist;
+
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -498,11 +501,11 @@ async function startServer() {
     });
     app.use(vite.middlewares);
 
-    // Fallback handler for client-side routing in Vite dev server
+    // Fallback handler for client-side routing in Vite dev server (e.g. /room/ABC123, /create-room, /join)
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
-      // Do not catch API or WS routes
-      if (url.startsWith('/api') || url.startsWith('/ws')) {
+      // Do not catch API routes
+      if (url.startsWith('/api')) {
         return next();
       }
 
@@ -516,9 +519,16 @@ async function startServer() {
       }
     });
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    // Production static files from dist
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
+
+    // Fallback for all other routes to dist/index.html
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api')) {
+        return next();
+      }
+      res.sendFile(distIndex);
     });
   }
 

@@ -10,7 +10,7 @@ import {
   ConnectionStatus,
   RoomMember,
 } from '../types';
-import { useRouter } from '../hooks/useRouter';
+import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
 
@@ -146,7 +146,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setToast({ text, type });
     setTimeout(() => {
       setToast(null);
-    }, 3000);
+    }, 3500);
   }, []);
 
   const clearRoomError = () => {
@@ -276,6 +276,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('join-room');
     } else if (urlRoomId) {
+      // If already joined this active room with active connection, don't re-validate
+      if (activeRoom && activeRoom.id.toUpperCase() === urlRoomId.toUpperCase() && currentUser.name) {
+        return;
+      }
+
       let isCancelled = false;
 
       const checkAndJoin = async () => {
@@ -288,9 +293,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setIsLoadingRoom(false);
 
         if (!roomData) {
-          setRoomError('اتاقی با این کد پیدا نشد');
+          const notFoundMsg = 'این اتاق پیدا نشد یا لینک آن منقضی شده است.';
+          setRoomError(notFoundMsg);
           setActiveRoom(null);
-          showToast('اتاقی با این کد پیدا نشد', 'error');
+          showToast(notFoundMsg, 'error');
           navigate('/');
           return;
         }
@@ -397,8 +403,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  const joinRoom = async (roomId: string) => {
-    const cleanId = roomId.trim().toUpperCase();
+  const joinRoom = async (roomIdInput: string) => {
+    const cleanId = cleanRoomId(roomIdInput);
     if (!cleanId) {
       setRoomError('لطفاً کد اتاق را وارد کنید');
       return;
@@ -411,8 +417,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsLoadingRoom(false);
 
     if (!roomData) {
-      setRoomError('اتاقی با این کد پیدا نشد');
-      showToast('اتاقی با این کد پیدا نشد', 'error');
+      const notFoundMsg = 'این اتاق پیدا نشد یا لینک آن منقضی شده است.';
+      setRoomError(notFoundMsg);
+      showToast(notFoundMsg, 'error');
       return;
     }
 

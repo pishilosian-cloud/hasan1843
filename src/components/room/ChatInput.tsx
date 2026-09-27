@@ -1,16 +1,25 @@
 import React, { useState, useRef } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { Send, Bot, Sparkles } from 'lucide-react';
+import { Send, Bot, Sparkles, Camera, X } from 'lucide-react';
 
 export const ChatInput: React.FC = () => {
-  const { sendMessage, connectionStatus } = useStudyRoom();
+  const { sendMessage, sendAIVision, connectionStatus, aiMode } = useStudyRoom();
   const [text, setText] = useState('');
+  const [attachedImage, setAttachedImage] = useState<{ file: File; previewUrl: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanText = text.trim();
-    if (!cleanText) return;
+    if (!cleanText && !attachedImage) return;
+
+    if (attachedImage) {
+      sendAIVision(cleanText, attachedImage.file, aiMode);
+      setAttachedImage(null);
+      setText('');
+      return;
+    }
 
     const sent = sendMessage(cleanText);
     if (sent) {
@@ -33,17 +42,57 @@ export const ChatInput: React.FC = () => {
     inputRef.current?.focus();
   };
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const previewUrl = URL.createObjectURL(file);
+    setAttachedImage({ file, previewUrl });
+    if (imageInputRef.current) imageInputRef.current.value = '';
+    if (!text.startsWith('/ai ')) {
+      setText('/ai ' + text.replace(/^[/@]ai\s*/i, ''));
+    }
+  };
+
   const isDisconnected = connectionStatus === 'disconnected' || connectionStatus === 'reconnecting';
-  const isAIPrompt = /^([/@]ai|ai\/|\/هوش)\b/i.test(text.trim());
+  const isAIPrompt = /^([/@]ai|ai\/|\/هوش)\b/i.test(text.trim()) || attachedImage !== null;
 
   return (
     <div className="w-full bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800 p-3 sm:p-4 shrink-0 transition-colors">
       <div className="max-w-4xl mx-auto space-y-2">
-        {/* Quick Helper Banner when invoking /ai */}
+        {/* Quick Helper Banner when invoking /ai or attaching image */}
         {isAIPrompt && (
           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 border border-purple-200/60 dark:border-purple-800/40 px-3 py-1 rounded-xl animate-in fade-in duration-150">
             <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-            <span>سوال از هوش مصنوعی در چت: پاسخ به عنوان پیام مشترک هوش مصنوعی در چت درج می‌شود.</span>
+            <span>
+              {attachedImage
+                ? '📷 سوال تصویری از هوش مصنوعی: تصویر به همراه متن برای تحلیل به سرور ارسال می‌شود.'
+                : 'سوال از هوش مصنوعی در چت: پاسخ به عنوان پیام مشترک هوش مصنوعی در چت درج می‌شود.'}
+            </span>
+          </div>
+        )}
+
+        {/* Attached Image Preview Bar */}
+        {attachedImage && (
+          <div className="p-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 flex items-center justify-between animate-in fade-in duration-150">
+            <div className="flex items-center gap-2">
+              <img
+                src={attachedImage.previewUrl}
+                alt="تصویر پیوست"
+                className="w-9 h-9 object-cover rounded-lg border border-purple-300 dark:border-purple-700"
+              />
+              <span className="text-xs font-semibold text-purple-900 dark:text-purple-200 truncate max-w-[200px]">
+                {attachedImage.file.name}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAttachedImage(null)}
+              className="p-1 text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
+              title="حذف تصویر"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
 
@@ -63,6 +112,28 @@ export const ChatInput: React.FC = () => {
             <span className="hidden sm:inline">/ai</span>
           </button>
 
+          {/* Camera / Image Button 📷 */}
+          <input
+            type="file"
+            ref={imageInputRef}
+            onChange={handleImageSelect}
+            className="hidden"
+            accept="image/*"
+          />
+          <button
+            type="button"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={isDisconnected}
+            className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shrink-0 shadow-xs ${
+              attachedImage
+                ? 'bg-purple-600 border-purple-600 text-white'
+                : 'bg-slate-100 dark:bg-slate-800 border-slate-200/80 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+            title="📷 ارسال تصویر برای هوش مصنوعی"
+          >
+            <Camera className="w-4 h-4" />
+          </button>
+
           {/* Message Input Field */}
           <input
             ref={inputRef}
@@ -74,6 +145,8 @@ export const ChatInput: React.FC = () => {
             placeholder={
               isDisconnected
                 ? 'در حال اتصال به سرور چت...'
+                : attachedImage
+                ? 'توضیحی درباره این عکس بنویسید (اختیاری)...'
                 : 'پیام خود را بنویسید (یا برای پرسش از هوش مصنوعی: ai/ سوال)...'
             }
             className="flex-1 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 rounded-xl px-4 py-3 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-50"
@@ -82,7 +155,7 @@ export const ChatInput: React.FC = () => {
           {/* Send Button */}
           <button
             type="submit"
-            disabled={!text.trim() || isDisconnected}
+            disabled={(!text.trim() && !attachedImage) || isDisconnected}
             className={`p-3 rounded-xl text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0 shadow-sm active:scale-95 ${
               isAIPrompt
                 ? 'bg-purple-600 hover:bg-purple-700'

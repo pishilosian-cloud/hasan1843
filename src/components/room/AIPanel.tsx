@@ -13,13 +13,15 @@ import {
   Zap,
   Brain,
   Layers,
+  Camera,
+  X,
 } from 'lucide-react';
-import { AIMode } from '../../types';
 
 export const AIPanel: React.FC = () => {
   const {
     aiMessages,
     sendAIQuestion,
+    sendAIVision,
     pamphlets,
     uploadPamphlet,
     isAskingAI,
@@ -30,8 +32,11 @@ export const AIPanel: React.FC = () => {
   } = useStudyRoom();
 
   const [question, setQuestion] = useState('');
+  const [selectedImage, setSelectedImage] = useState<{ file: File; previewUrl: string } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isUserScrolledUpRef = useRef<boolean>(false);
   const prevMsgCountRef = useRef<number>(aiMessages.length);
@@ -62,12 +67,20 @@ export const AIPanel: React.FC = () => {
 
   const handleAsk = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!question.trim() || isAskingAI) return;
+    if ((!question.trim() && !selectedImage) || isAskingAI) return;
+
     const q = question.trim();
+    const img = selectedImage;
+
     setQuestion('');
-    // Ensure we scroll to bottom when user explicitly sends a question
+    setSelectedImage(null);
     isUserScrolledUpRef.current = false;
-    await sendAIQuestion(q, aiMode);
+
+    if (img) {
+      await sendAIVision(q, img.file, aiMode);
+    } else {
+      await sendAIQuestion(q, aiMode);
+    }
   };
 
   const handleQuickPrompt = (promptText: string) => {
@@ -87,6 +100,15 @@ export const AIPanel: React.FC = () => {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const previewUrl = URL.createObjectURL(file);
+    setSelectedImage({ file, previewUrl });
+    if (imageInputRef.current) imageInputRef.current.value = '';
   };
 
   const quickPrompts = [
@@ -237,7 +259,7 @@ export const AIPanel: React.FC = () => {
               پرسش‌ها و پاسخ‌ها برای همه اعضا نمایش داده می‌شوند.
             </p>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              هر عضوی از هوش مصنوعی سوالی بپرسد، پاسخ برای کل اتاق مشترک است و بر اساس جزوه اتاق یا تفکر عمیق مدل پاسخ داده می‌شود.
+              هر عضوی از هوش مصنوعی سوال متنی یا تصویری بپرسد، پاسخ برای کل اتاق مشترک است و بر اساس جزوه اتاق یا تفکر عمیق مدل پاسخ داده می‌شود.
             </p>
           </div>
         ) : null}
@@ -270,7 +292,7 @@ export const AIPanel: React.FC = () => {
             return (
               <div
                 key={item.id}
-                className="p-3 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 text-right space-y-1.5 animate-in fade-in duration-200"
+                className="p-3 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 text-right space-y-2 animate-in fade-in duration-200"
               >
                 <div className="flex items-center justify-between text-[11px] text-indigo-800 dark:text-indigo-300">
                   <div className="flex items-center gap-1.5 font-bold">
@@ -281,6 +303,15 @@ export const AIPanel: React.FC = () => {
                     {item.createdAt}
                   </span>
                 </div>
+                {item.image && (
+                  <div className="mt-1">
+                    <img
+                      src={item.image.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`}
+                      alt="تصویر ارسالی"
+                      className="max-h-36 rounded-xl border border-indigo-200/80 dark:border-indigo-800 object-cover shadow-xs"
+                    />
+                  </div>
+                )}
                 <p className="text-xs font-medium text-slate-900 dark:text-slate-100 leading-relaxed pr-1">
                   {item.message}
                 </p>
@@ -358,23 +389,74 @@ export const AIPanel: React.FC = () => {
         )}
       </div>
 
-      {/* Question Input Form */}
-      <form onSubmit={handleAsk} className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 shrink-0">
+      {/* Selected Image Preview */}
+      {selectedImage && (
+        <div className="mb-2 p-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2">
+            <img
+              src={selectedImage.previewUrl}
+              alt="پیش‌نمایش تصویر"
+              className="w-10 h-10 object-cover rounded-lg border border-purple-300 dark:border-purple-700"
+            />
+            <span className="text-[11px] font-semibold text-purple-900 dark:text-purple-200 truncate max-w-[180px]">
+              {selectedImage.file.name}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedImage(null)}
+            className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+            title="حذف تصویر"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Question Input Form with Camera Button 📷 */}
+      <form onSubmit={handleAsk} className="flex items-center gap-1.5 pt-2 border-t border-slate-100 dark:border-slate-800 shrink-0">
+        {/* Hidden Image Input */}
+        <input
+          type="file"
+          ref={imageInputRef}
+          onChange={handleImageSelect}
+          className="hidden"
+          accept="image/*"
+        />
+
+        {/* Camera / Image Button 📷 */}
+        <button
+          type="button"
+          onClick={() => imageInputRef.current?.click()}
+          disabled={isAskingAI}
+          className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shrink-0 shadow-xs ${
+            selectedImage
+              ? 'bg-purple-600 border-purple-600 text-white'
+              : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+          }`}
+          title="📷 پرسش از روی عکس فرمول، مسئله یا صفحه کتاب"
+        >
+          <Camera className="w-4 h-4" />
+        </button>
+
         <input
           type="text"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder={
-            aiMode === 'complex'
+            selectedImage
+              ? 'سوال یا توضیحی درباره این عکس بنویسید (اختیاری)...'
+              : aiMode === 'complex'
               ? 'سؤال تحلیلی و عمیق خود را بپرسید...'
               : 'سؤالت رو بنویس (نسخه خلاصه و سریع)...'
           }
           disabled={isAskingAI}
           className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
         />
+
         <button
           type="submit"
-          disabled={!question.trim() || isAskingAI}
+          disabled={(!question.trim() && !selectedImage) || isAskingAI}
           className={`p-2.5 rounded-xl text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0 shadow-xs ${
             aiMode === 'complex' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-indigo-600 hover:bg-indigo-700'
           }`}

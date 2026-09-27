@@ -74,6 +74,7 @@ export interface AIMessage {
   senderId?: string;
   senderAvatarBg?: string;
   message: string;
+  image?: string;
   createdAt: string;
   sources?: string[];
   mode?: AIMode;

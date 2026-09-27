@@ -414,16 +414,84 @@ class ChatService {
         return true;
       } else {
         const errData = await res.json().catch(() => ({}));
-        const errMsg = errData.error || 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.';
+        const errMsg = errData.error || 'دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.';
         this.errorListeners.forEach((fn) => fn(errMsg));
         return false;
       }
     } catch {
       this.errorListeners.forEach((fn) =>
-        fn('فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.')
+        fn('دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.')
       );
       return false;
     }
+  }
+
+  /**
+   * Secure Multimodal AI Endpoint: POST /api/ai/vision
+   * Sends image + optional prompt to server-side Gemini safely
+   */
+  public async askAIVision(
+    question: string,
+    imageData: string,
+    mimeType: string,
+    mode: AIMode = 'simple'
+  ): Promise<boolean> {
+    const raw = question.trim();
+    if (!this.currentRoomId || !this.currentUser || !imageData) return false;
+
+    const roomId = this.currentRoomId;
+    const user = this.currentUser;
+
+    try {
+      const res = await fetch('/api/ai/vision', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          roomId,
+          message: raw || 'لطفاً این تصویر (فرمول / مسئله / نمودار / صفحه درس) را تحلیل کن و پاسخ کامل بده.',
+          image: imageData,
+          mimeType: mimeType || 'image/jpeg',
+          mode,
+          userId: user.id,
+          userName: user.name,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.userMsg) this.aiMessageListeners.forEach((fn) => fn(data.userMsg));
+        if (data.aiMsg) this.aiMessageListeners.forEach((fn) => fn(data.aiMsg));
+        return true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const errMsg = errData.error || 'دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.';
+        this.errorListeners.forEach((fn) => fn(errMsg));
+        return false;
+      }
+    } catch {
+      this.errorListeners.forEach((fn) =>
+        fn('دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.')
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Safe AI Health Check: GET /api/ai/status
+   */
+  public async checkAIStatus(): Promise<boolean> {
+    try {
+      const res = await fetch('/api/ai/status');
+      if (res.ok) {
+        const data = await res.json();
+        return Boolean(data.available);
+      }
+    } catch {
+      // ignore
+    }
+    return false;
   }
 
   public async uploadPamphlet(pamphletData: {

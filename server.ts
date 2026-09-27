@@ -689,7 +689,15 @@ app.post('/api/rooms/:roomId/messages', async (req, res) => {
   res.status(201).json(createdMsg);
 });
 
-// AI Endpoints
+// AI Status Health Check (Never exposes API keys or internal secrets)
+app.get('/api/ai/status', (req, res) => {
+  const hasKey = Boolean((process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim());
+  res.json({
+    available: hasKey,
+  });
+});
+
+// AI History for Room
 app.get('/api/rooms/:roomId/ai', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
@@ -709,33 +717,42 @@ async function handleAIChatRequest(
   targetRoomId: string,
   rawMessage: string,
   userParam?: { id?: string; name?: string; avatarBg?: string },
-  modeParam?: AIMode
+  modeParam?: AIMode,
+  imageAttachment?: { data: string; mimeType: string }
 ) {
-  // 1. Rate Limiting Check
-  const clientIdentifier = (req.ip || req.socket.remoteAddress || 'unknown') + ':' + (userParam?.id || 'anon');
-  if (!checkAIRateLimit(clientIdentifier)) {
-    return res.status(429).json({
-      error: 'تعداد درخواست‌های شما بیش از حد مجاز است. لطفاً کمی صبر کرده و دوباره تلاش کنید.',
+  // 1. Check API Key availability
+  const aiClient = getGeminiClient();
+  if (!aiClient) {
+    return res.status(503).json({
+      error: 'دستیار هوشمند در حال حاضر در دسترس نیست.',
     });
   }
 
-  // 2. Validate Room
+  // 2. Rate Limiting Check
+  const clientIdentifier = (req.ip || req.socket.remoteAddress || 'unknown') + ':' + (userParam?.id || 'anon');
+  if (!checkAIRateLimit(clientIdentifier)) {
+    return res.status(429).json({
+      error: 'تعداد درخواست‌ها زیاد است، کمی بعد دوباره تلاش کن.',
+    });
+  }
+
+  // 3. Validate Room
   const room = findRoomCaseInsensitive(targetRoomId);
   if (!room) {
     return res.status(404).json({ error: 'این اتاق پیدا نشد یا منقضی شده است.' });
   }
 
-  // 3. Validate Message length (max 2000 chars)
+  // 4. Validate Message length (max 1500 chars)
   const cleanQ = rawMessage?.trim();
-  if (!cleanQ) {
-    return res.status(400).json({ error: 'متن سوال الزامی است.' });
+  if (!cleanQ && !imageAttachment) {
+    return res.status(400).json({ error: 'متن سوال یا تصویر الزامی است.' });
   }
 
-  if (cleanQ.length > 2000) {
-    return res.status(400).json({ error: 'طول پیام بیش از حد مجاز است (حداکثر ۲۰۰۰ کاراکتر).' });
+  if (cleanQ && cleanQ.length > 1500) {
+    return res.status(400).json({ error: 'طول پیام بیش از حد مجاز است (حداکثر ۱۵۰۰ کاراکتر).' });
   }
 
-  // 4. Authenticate & Verify Member presence in Room
+  // 5. Authenticate & Verify Member presence in Room
   const userName = userParam?.name?.trim() || 'دانشجو';
   const userId = userParam?.id || `user-${Date.now()}`;
   const aiMode: AIMode = modeParam === 'complex' ? 'complex' : 'simple';
@@ -757,7 +774,7 @@ async function handleAIChatRequest(
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
-  // 5. Create and save User's question
+  // 6. Create and save User's question
   const userMsg: AIMessage = {
     id: `aimsg-${Date.now()}-u`,
     roomId: room.id,
@@ -765,7 +782,8 @@ async function handleAIChatRequest(
     sender: userName,
     senderId: userId,
     senderAvatarBg: member.avatarBg || avatarGradients[0],
-    message: cleanQ,
+    message: cleanQ || (imageAttachment ? 'تحلیل تصویر پیوست شده' : ''),
+    image: imageAttachment ? imageAttachment.data : undefined,
     createdAt: timeFormatted,
     mode: aiMode,
   };
@@ -786,14 +804,21 @@ async function handleAIChatRequest(
     type: 'ai-thinking',
     roomId: room.id,
     isThinking: true,
-    question: cleanQ,
+    question: cleanQ || 'تحلیل تصویر',
     userName,
     mode: aiMode,
   });
 
-  // 6. Query Gemini with strict Room Isolation (only pamphlets of this room)
+  // 7. Query Gemini with strict Room Isolation (only pamphlets of this room)
   try {
-    const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name, aiMode);
+    const aiAnswer = await generateAIAnswer(
+      room.id,
+      cleanQ || 'لطفاً تصویر پیوست شده را به دقت تحلیل کن و پاسخ کامل ارائه بده.',
+      userName,
+      room.name,
+      aiMode,
+      imageAttachment
+    );
 
     const aiMsg: AIMessage = {
       id: `aimsg-${Date.now()}-ai`,
@@ -825,7 +850,7 @@ async function handleAIChatRequest(
     console.error('[StudyRoom AI Execution Error]:', err instanceof Error ? err.message : err);
 
     return res.status(500).json({
-      error: 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.',
+      error: 'دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.',
     });
   } finally {
     broadcastToRoom(room.id, {
@@ -859,6 +884,53 @@ app.post('/api/ai/chat', async (req, res) => {
   const effectiveMode: AIMode = mode === 'complex' ? 'complex' : 'simple';
 
   await handleAIChatRequest(req, res, targetRoomId, targetMessage, effectiveUser, effectiveMode);
+});
+
+/**
+ * Multimodal Visual AI Endpoint:
+ * POST /api/ai/vision
+ * Body: { roomId: string, message?: string, image: string, mimeType?: string, mode?: 'simple' | 'complex', userId?: string, userName?: string }
+ */
+app.post('/api/ai/vision', async (req, res) => {
+  const { roomId, message, image, mimeType, mode, userId, userName, user } = req.body;
+  const targetRoomId = roomId || req.body?.room_id;
+  if (!targetRoomId) {
+    return res.status(400).json({ error: 'شناسه اتاق (roomId) الزامی است.' });
+  }
+  if (!image || typeof image !== 'string') {
+    return res.status(400).json({ error: 'فایل تصویر الزامی است.' });
+  }
+
+  const effectiveUser = {
+    id: userId || user?.id,
+    name: userName || user?.name,
+    avatarBg: user?.avatarBg,
+  };
+
+  const effectiveMode: AIMode = mode === 'complex' ? 'complex' : 'simple';
+
+  // Clean and prepare base64 data
+  let cleanBase64 = image;
+  let effectiveMime = mimeType || 'image/jpeg';
+  if (image.startsWith('data:')) {
+    const commaIdx = image.indexOf(',');
+    if (commaIdx >= 0) {
+      const header = image.slice(0, commaIdx);
+      const mimeMatch = header.match(/data:([^;]+);base64/);
+      if (mimeMatch) effectiveMime = mimeMatch[1];
+      cleanBase64 = image.slice(commaIdx + 1);
+    }
+  }
+
+  await handleAIChatRequest(
+    req,
+    res,
+    targetRoomId,
+    message || '',
+    effectiveUser,
+    effectiveMode,
+    { data: cleanBase64, mimeType: effectiveMime }
+  );
 });
 
 // Backward-compatible alias route
@@ -929,7 +1001,8 @@ async function generateAIAnswer(
   question: string,
   userName: string,
   roomName: string,
-  mode: AIMode = 'simple'
+  mode: AIMode = 'simple',
+  imageAttachment?: { data: string; mimeType: string }
 ): Promise<{ text: string; sources: string[] }> {
   const aiClient = getGeminiClient();
 
@@ -943,6 +1016,16 @@ async function generateAIAnswer(
   const sources: string[] = [];
   const pamphletContexts: string[] = [];
   const inlineParts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
+
+  // If user attached an image for visual reasoning (📷)
+  if (imageAttachment && imageAttachment.data) {
+    inlineParts.push({
+      inlineData: {
+        mimeType: imageAttachment.mimeType || 'image/jpeg',
+        data: imageAttachment.data,
+      },
+    });
+  }
 
   let accumulatedChars = 0;
   const MAX_CONTEXT_CHARS = 12000;
@@ -986,7 +1069,7 @@ async function generateAIAnswer(
     }
   }
 
-  const hasPamphlets = pamphletContexts.length > 0 || inlineParts.length > 0;
+  const hasPamphlets = pamphletContexts.length > 0 || inlineParts.length > (imageAttachment ? 1 : 0);
 
   const modeInstruction =
     mode === 'complex'
@@ -1005,8 +1088,8 @@ ${modeInstruction}
 قوانین پاسخگویی:
 ۱. جزوات و فایل‌های مربوط به این اتاق در اختیارت قرار داده شده است.
 ۲. اگر سوال دانشجو مربوط به مباحث جزوه است، اولویت اول پاسخگویی بر اساس اطلاعات داخل جزوه است و نام جزوه را در متن ذکر کن.
-۳. اگر پاسخ سوال در جزوه وجود نداشت یا مبحث متفاوتی بود، یا حتی بخشی از آن در جزوه نیامده بود:
-   ابتدا در یک جمله کوتاه اشاره کن: «این مبحث در جزوات فعلی این اتاق ذکر نشده است»، و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود بر اساس حالت تعیین شده (${mode === 'complex' ? 'تحلیلی و جامع' : 'خلاصه و مفید'}) پاسخ کامل و دقیق به زبان فارسی ارائه بده.`
+۳. اگر پاسخ سوال در جزوه وجود نداشت یا مبحث متفاوتی بود، یا بخشی از آن در جزوه نیامده بود:
+   صراحتاً بگو: «این مورد در جزوه پیدا نشد؛ می‌تونم بر اساس اطلاعات عمومی توضیحش بدم.» و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود بر اساس حالت تعیین شده (${mode === 'complex' ? 'تحلیلی و جامع' : 'خلاصه و مفید'}) پاسخ کامل و دقیق به زبان فارسی ارائه بده.`
     : `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
 در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده است.
 

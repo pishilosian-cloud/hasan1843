@@ -1,0 +1,89 @@
+{
+  "ABC123": [
+    {
+      "id": "msg-seed-1",
+      "roomId": "ABC123",
+      "senderId": "user-seed-1",
+      "senderName": "سارا احمدی",
+      "senderAvatarBg": "from-emerald-500 to-teal-600",
+      "content": "سلام هم‌اتاقی‌ها! مطالعه فصل اول حسابداری مالی رو شروع کنیم.",
+      "timestamp": "۱۰:۰۲",
+      "createdAt": "2026-09-27T20:41:55.574Z",
+      "isSelf": false
+    },
+    {
+      "id": "msg-seed-2",
+      "roomId": "ABC123",
+      "senderId": "user-seed-2",
+      "senderName": "رضا محمدی",
+      "senderAvatarBg": "from-amber-500 to-orange-600",
+      "content": "سلام، عالیه. من جزوه خلاصه فرمول‌ها رو هم آماده دارم.",
+      "timestamp": "۱۰:۰۶",
+      "createdAt": "2026-09-27T20:41:55.575Z",
+      "isSelf": false
+    }
+  ],
+  "MATH101": [],
+  "23ACZX": [],
+  "5PXQNU": [
+    {
+      "id": "msg-1790543798245-4fap",
+      "roomId": "5PXQNU",
+      "senderId": "user-4222",
+      "senderName": "س",
+      "senderAvatarBg": "from-indigo-500 to-purple-600",
+      "content": "سلام",
+      "timestamp": "۲۱:۱۶",
+      "createdAt": "2026-09-27T21:16:42.898Z",
+      "isSelf": false
+    }
+  ],
+  "3VBXN3": [
+    {
+      "id": "msg-1790546134919-vnma",
+      "roomId": "3VBXN3",
+      "senderId": "user-4222",
+      "senderName": "س",
+      "senderAvatarBg": "from-indigo-500 to-purple-600",
+      "content": "/ai",
+      "timestamp": "۲۱:۵۵",
+      "createdAt": "2026-09-27T21:55:39.720Z",
+      "isSelf": false
+    },
+    {
+      "id": "msg-ai-1790546139722-k2ol6",
+      "roomId": "3VBXN3",
+      "senderId": "ai-assistant",
+      "senderName": "🤖 دستیار هوشمند AI",
+      "senderAvatarBg": "from-purple-600 to-indigo-600",
+      "content": "سلام س! من دستیار هوشمند مطالعه شما هستم 🤖\nبرای پرسش از من کافیست بعد از /ai سوالت رو بنویسی.\n\nمثال:\n/ai دارایی جاری چیست؟",
+      "timestamp": "۲۱:۵۵",
+      "createdAt": "2026-09-27T21:55:39.722Z",
+      "isSelf": false,
+      "isAI": true
+    },
+    {
+      "id": "msg-1790546144606-nq67",
+      "roomId": "3VBXN3",
+      "senderId": "user-4222",
+      "senderName": "س",
+      "senderAvatarBg": "from-indigo-500 to-purple-600",
+      "content": "/ai فحش بلدی>",
+      "timestamp": "۲۱:۵۵",
+      "createdAt": "2026-09-27T21:55:49.407Z",
+      "isSelf": false
+    },
+    {
+      "id": "msg-ai-1790546152695-pbwzy",
+      "roomId": "3VBXN3",
+      "senderId": "ai-assistant",
+      "senderName": "🤖 دستیار هوشمند AI",
+      "senderAvatarBg": "from-purple-600 to-indigo-600",
+      "content": "سلام دانشجو «س» عزیز؛\n\nخیر، دایره واژگان من طوری تنظیم شده که از کلمات توهین‌آمیز و نامناسب استفاده نکنم. \n\n**هدف و توانایی من در اتاق مطالعه «نن»:**\n* **حل مسئله و تدریس:** پاسخ به سوالات درسی، علمی، پژوهشی و محاسباتی شما.\n* **خلاصه‌سازی:** توضیح ساده و سریع مباحث سنگین درسی.\n* **راهنمایی تحصیلی:** کمک به برنامه‌ریزی، نگارش و درک بهتر مفاهیم.\n\nاگر سوال درسی، نکته علمی یا مبحثی برای تمرین داری، بگو تا با هم بررسیش کنیم!",
+      "timestamp": "۲۱:۵۵",
+      "createdAt": "2026-09-27T21:55:52.695Z",
+      "isSelf": false,
+      "isAI": true
+    }
+  ]
+}

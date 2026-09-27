@@ -54,6 +54,7 @@ interface StudyRoomContextType {
 
   sendMessage: (content: string) => boolean;
   sendAIQuestion: (question: string, overrideMode?: AIMode) => Promise<void>;
+  sendAIVision: (question: string, file: File, overrideMode?: AIMode) => Promise<void>;
   uploadPamphlet: (file: File) => Promise<void>;
 
   toggleVoiceCall: () => void;
@@ -595,6 +596,42 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  // Multimodal AI Visual Question (📷)
+  const sendAIVision = async (question: string, file: File, overrideMode?: AIMode) => {
+    if (isAskingAI) return;
+    if (file.size > 15 * 1024 * 1024) {
+      showToast('حجم تصویر نباید بیشتر از ۱۵ مگابایت باشد', 'error');
+      return;
+    }
+
+    const cleanQ = question.trim();
+    const modeToUse = overrideMode || aiMode;
+
+    setIsAskingAI(true);
+    setAiThinking({
+      isThinking: true,
+      question: cleanQ || 'تحلیل تصویر پیوست شده',
+      userName: currentUser.name || 'شما',
+      mode: modeToUse,
+    });
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64Data = reader.result as string;
+      const success = await chatService.askAIVision(cleanQ, base64Data, file.type, modeToUse);
+      if (!success) {
+        setIsAskingAI(false);
+        setAiThinking({ isThinking: false });
+      }
+    };
+    reader.onerror = () => {
+      setIsAskingAI(false);
+      setAiThinking({ isThinking: false });
+      showToast('خطا در خواندن فایل تصویر', 'error');
+    };
+    reader.readAsDataURL(file);
+  };
+
   // Upload room pamphlet (PDF, TXT, DOCX)
   const uploadPamphlet = async (file: File) => {
     if (!activeRoom) {
@@ -748,6 +785,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         currentPath,
         sendMessage,
         sendAIQuestion,
+        sendAIVision,
         uploadPamphlet,
         toggleVoiceCall,
         toggleMicrophone,

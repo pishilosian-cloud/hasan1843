@@ -39,12 +39,14 @@ export interface RoomData {
 
 export interface ChatMessage {
   id: string;
+  roomId: string;
   senderId: string;
   senderName: string;
   senderAvatar?: string;
   senderAvatarBg?: string;
   content: string;
   timestamp: string;
+  createdAt?: string;
   isSelf: boolean;
   isAI?: boolean;
   attachment?: {
@@ -81,5 +83,22 @@ export interface VoiceState {
   activeSpeakers: string[];
 }
 
+export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
 export type AppView = 'lobby' | 'room';
 export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry';
+
+// WebSocket Protocol Types
+export type WSClientMessage =
+  | { type: 'join-room'; roomId: string; user: { id: string; name: string; avatarBg?: string } }
+  | { type: 'leave-room'; roomId: string; userId: string }
+  | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string } }
+  | { type: 'ping' };
+
+export type WSServerMessage =
+  | { type: 'room-init'; roomId: string; room: RoomData; messages: ChatMessage[]; members: RoomMember[] }
+  | { type: 'new-message'; roomId: string; message: ChatMessage }
+  | { type: 'presence-update'; roomId: string; members: RoomMember[] }
+  | { type: 'user-joined'; roomId: string; member: RoomMember }
+  | { type: 'user-left'; roomId: string; userId: string }
+  | { type: 'error'; message: string }
+  | { type: 'pong' };

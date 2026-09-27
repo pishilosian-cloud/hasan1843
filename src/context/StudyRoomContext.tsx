@@ -1,7 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { User, Room, ChatMessage, AIMessageItem, PamphletFile, VoiceState, ModalType } from '../types';
+import {
+  User,
+  Room,
+  ChatMessage,
+  AIMessageItem,
+  PamphletFile,
+  VoiceState,
+  ModalType,
+  ConnectionStatus,
+  RoomMember,
+} from '../types';
 import { useRouter } from '../hooks/useRouter';
-import { roomStore } from '../services/roomStore';
+import { chatService } from '../services/chatService';
+import { roomService } from '../services/roomService';
 
 interface StudyRoomContextType {
   currentUser: User;
@@ -11,12 +22,15 @@ interface StudyRoomContextType {
   openModal: (type: ModalType, roomId?: string) => void;
   closeModal: () => void;
   pendingRoomId: string | null;
-  
+
   members: User[];
   messages: ChatMessage[];
   aiMessages: AIMessageItem[];
   pamphlets: PamphletFile[];
   voiceState: VoiceState;
+  connectionStatus: ConnectionStatus;
+  isLoadingMessages: boolean;
+
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   toast: { text: string; type: 'success' | 'info' | 'error' } | null;
@@ -26,16 +40,16 @@ interface StudyRoomContextType {
   roomError: string | null;
   clearRoomError: () => void;
 
-  createRoom: (roomName: string, category?: string) => void;
-  joinRoom: (roomId: string) => void;
+  createRoom: (roomName: string, category?: string) => Promise<void>;
+  joinRoom: (roomId: string) => Promise<void>;
   leaveRoom: () => void;
   navigateTo: (path: string) => void;
   currentPath: string;
-  
-  sendMessage: (content: string, attachment?: { name: string; size: string; type: 'image' | 'file'; url?: string }) => void;
+
+  sendMessage: (content: string) => boolean;
   sendAIQuestion: (question: string) => void;
   uploadPamphlet: (fileName: string, fileSize: string) => void;
-  
+
   toggleVoiceCall: () => void;
   toggleMicrophone: () => void;
   copyRoomLink: () => void;
@@ -51,36 +65,6 @@ const defaultUser: User = {
   isMuted: false,
   role: 'member',
 };
-
-const initialMessages: ChatMessage[] = [
-  {
-    id: 'msg-1',
-    senderId: 'user-2',
-    senderName: 'سارا احمدی',
-    senderAvatarBg: 'from-emerald-500 to-teal-600',
-    content: 'سلام بچه‌ها! همگی خوش اومدید به اتاق مطالعه. فصل اول رو شروع کنیم؟',
-    timestamp: '۱۰:۳۰',
-    isSelf: false,
-  },
-  {
-    id: 'msg-2',
-    senderId: 'user-3',
-    senderName: 'رضا محمدی',
-    senderAvatarBg: 'from-amber-500 to-orange-600',
-    content: 'سلام سارا جان، بله من خلاصه فصل ۱ و ۲ رو هم آپلود کردم در پنل دستیار AI.',
-    timestamp: '۱۰:۳۱',
-    isSelf: false,
-  },
-  {
-    id: 'msg-3',
-    senderId: 'ai-assistant',
-    senderName: 'دستیار AI آموزشی',
-    content: 'سلام به اعضای اتاق مطالعه! من آمادگی دارم فرمول‌ها و نکات کلیدی جزوات شما رو تحلیل کنم یا ازتون سوالات چهارگزینه‌ای امتحان بپرسم.',
-    timestamp: '۱۰:۳۲',
-    isSelf: false,
-    isAI: true,
-  },
-];
 
 const initialAIHistory: AIMessageItem[] = [
   {
@@ -136,10 +120,12 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(true);
   const [roomError, setRoomError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
   const [members, setMembers] = useState<User[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [aiMessages, setAiMessages] = useState<AIMessageItem[]>(initialAIHistory);
   const [pamphlets, setPamphlets] = useState<PamphletFile[]>(initialPamphlets);
 
@@ -199,55 +185,90 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  // Sync room members from roomStore when room changes or store updates
-  const syncRoomData = useCallback((targetRoomId: string) => {
-    const roomData = roomStore.getRoom(targetRoomId);
-    if (roomData) {
-      setActiveRoom({
-        id: roomData.id,
-        name: roomData.name,
-        category: roomData.category || 'عمومی',
-        createdAt: roomData.createdAt,
-        hostName: roomData.ownerName,
-        membersCount: roomData.members.length,
-      });
-
-      const mappedUsers: User[] = roomData.members.map((m) => ({
-        id: m.id,
-        name: m.name,
-        avatar: m.name ? m.name.charAt(0) : '؟',
-        avatarBg: m.avatarBg,
-        isOnline: m.isOnline,
-        isSpeaking: false,
-        isMuted: false,
-        role: m.role,
-      }));
-
-      setMembers(mappedUsers);
-    }
+  // Helper to map RoomMember array to User array
+  const mapMembersToUsers = useCallback((roomMembers: RoomMember[]): User[] => {
+    return roomMembers.map((m) => ({
+      id: m.id,
+      name: m.name,
+      avatar: m.name ? m.name.charAt(0) : '؟',
+      avatarBg: m.avatarBg,
+      isOnline: m.isOnline,
+      isSpeaking: false,
+      isMuted: false,
+      role: m.role,
+    }));
   }, []);
 
-  // Listen to cross-tab store updates
+  // Subscribe to WebSocket chatService events
+  const prevStatusRef = useRef<ConnectionStatus>('disconnected');
   useEffect(() => {
-    const unsubscribe = roomStore.subscribe(() => {
-      if (activeRoom) {
-        syncRoomData(activeRoom.id);
-      }
-    });
-    return () => unsubscribe();
-  }, [activeRoom, syncRoomData]);
+    const unsubInit = chatService.onInit((data) => {
+      setIsLoadingMessages(false);
+      setActiveRoom({
+        id: data.room.id,
+        name: data.room.name,
+        category: data.room.category || 'عمومی',
+        createdAt: data.room.createdAt,
+        hostName: data.room.ownerName,
+        membersCount: data.members.length,
+      });
 
-  // Track processed URL route to avoid re-triggering loops
-  const processedRouteRef = useRef<string>('');
+      setMembers(mapMembersToUsers(data.members));
+
+      // Map messages with isSelf flag
+      const enrichedMessages = data.messages.map((m) => ({
+        ...m,
+        isSelf: m.senderId === currentUser.id,
+      }));
+      setMessages(enrichedMessages);
+    });
+
+    const unsubNewMsg = chatService.onNewMessage((newMsg) => {
+      setMessages((prev) => {
+        // Prevent duplicate messages
+        if (prev.some((m) => m.id === newMsg.id)) {
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            ...newMsg,
+            isSelf: newMsg.senderId === currentUser.id,
+          },
+        ];
+      });
+    });
+
+    const unsubPresence = chatService.onPresenceUpdate((updatedMembers) => {
+      setMembers(mapMembersToUsers(updatedMembers));
+      setActiveRoom((prev) => (prev ? { ...prev, membersCount: updatedMembers.length } : null));
+    });
+
+    const unsubStatus = chatService.onStatusChange((status) => {
+      setConnectionStatus(status);
+      if (status === 'connected' && (prevStatusRef.current === 'reconnecting' || prevStatusRef.current === 'disconnected')) {
+        showToast('اتصال برقرار شد', 'success');
+      } else if (status === 'reconnecting') {
+        showToast('اتصال قطع شد، در حال تلاش برای اتصال مجدد...', 'info');
+      }
+      prevStatusRef.current = status;
+    });
+
+    const unsubError = chatService.onError((errMsg) => {
+      showToast(errMsg, 'error');
+    });
+
+    return () => {
+      unsubInit();
+      unsubNewMsg();
+      unsubPresence();
+      unsubStatus();
+      unsubError();
+    };
+  }, [currentUser.id, mapMembersToUsers, showToast]);
 
   // Route & Room URL Validation Effect
   useEffect(() => {
-    const routeKey = `${currentPath}_${urlRoomId || ''}_${currentUser.name || ''}`;
-    if (processedRouteRef.current === routeKey) {
-      return;
-    }
-    processedRouteRef.current = routeKey;
-
     if (currentPath === '/create-room') {
       setIsLoadingRoom(false);
       setModalType('create-room');
@@ -255,39 +276,57 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('join-room');
     } else if (urlRoomId) {
-      const roomData = roomStore.getRoom(urlRoomId);
+      let isCancelled = false;
 
-      if (!roomData) {
-        setIsLoadingRoom(false);
-        setRoomError('اتاقی با این کد پیدا نشد');
-        setActiveRoom(null);
-        showToast('اتاقی با این کد پیدا نشد', 'error');
-        navigate('/');
-        return;
-      }
+      const checkAndJoin = async () => {
+        setIsLoadingRoom(true);
+        setRoomError(null);
 
-      // Room exists!
-      if (!currentUser.name) {
+        const roomData = await roomService.getRoom(urlRoomId);
+        if (isCancelled) return;
+
         setIsLoadingRoom(false);
-        setPendingRoomId(roomData.id);
-        setModalType('name-entry');
-      } else {
-        // Add user to room in store
-        roomStore.addMemberToRoom(roomData.id, {
-          id: currentUser.id,
-          name: currentUser.name,
-        });
-        syncRoomData(roomData.id);
-        setModalType('none');
-        setIsLoadingRoom(false);
-      }
+
+        if (!roomData) {
+          setRoomError('اتاقی با این کد پیدا نشد');
+          setActiveRoom(null);
+          showToast('اتاقی با این کد پیدا نشد', 'error');
+          navigate('/');
+          return;
+        }
+
+        // Room exists! Check user name
+        if (!currentUser.name) {
+          setPendingRoomId(roomData.id);
+          setModalType('name-entry');
+        } else {
+          setModalType('none');
+          setIsLoadingMessages(true);
+          // Connect to real-time WebSocket room
+          chatService.connectToRoom(roomData.id, {
+            id: currentUser.id,
+            name: currentUser.name,
+            avatarBg: currentUser.avatarBg,
+          });
+        }
+      };
+
+      checkAndJoin();
+
+      return () => {
+        isCancelled = true;
+      };
     } else if (currentPath === '/') {
       setIsLoadingRoom(false);
       if (modalType !== 'name-entry') {
         setModalType('none');
       }
+      if (activeRoom) {
+        chatService.leaveRoom();
+        setActiveRoom(null);
+      }
     }
-  }, [currentPath, urlRoomId, currentUser.name, currentUser.id, syncRoomData, navigate, showToast, modalType]);
+  }, [currentPath, urlRoomId, currentUser.name, currentUser.id, currentUser.avatarBg, navigate, showToast, activeRoom, modalType]);
 
   const setUserName = (name: string) => {
     const trimmed = name.trim();
@@ -304,55 +343,61 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const targetRoomId = pendingRoomId || urlRoomId;
 
     if (targetRoomId) {
-      const roomData = roomStore.getRoom(targetRoomId);
-      if (roomData) {
-        roomStore.addMemberToRoom(roomData.id, {
-          id: updatedUser.id,
-          name: trimmed,
-        });
-        syncRoomData(roomData.id);
-        setPendingRoomId(null);
-        closeModal();
-        navigate(`/room/${roomData.id}`);
-        showToast(`ورود به اتاق «${roomData.name}» با موفقیت انجام شد.`);
-      } else {
-        setRoomError('اتاقی با این کد پیدا نشد');
-        showToast('اتاقی با این کد پیدا نشد', 'error');
-        navigate('/');
-      }
-    } else if (activeRoom) {
-      roomStore.addMemberToRoom(activeRoom.id, {
+      setPendingRoomId(null);
+      closeModal();
+      navigate(`/room/${targetRoomId}`);
+
+      setIsLoadingMessages(true);
+      chatService.connectToRoom(targetRoomId, {
         id: updatedUser.id,
         name: trimmed,
+        avatarBg: updatedUser.avatarBg,
       });
-      syncRoomData(activeRoom.id);
+      showToast(`ورود به اتاق با موفقیت انجام شد.`);
+    } else if (activeRoom) {
       closeModal();
+      chatService.connectToRoom(activeRoom.id, {
+        id: updatedUser.id,
+        name: trimmed,
+        avatarBg: updatedUser.avatarBg,
+      });
     }
   };
 
-  const createRoom = (roomName: string, category: string = 'عمومی') => {
+  const createRoom = async (roomName: string, category: string = 'عمومی') => {
     if (!currentUser.name) {
       setModalType('name-entry');
       return;
     }
 
     setIsLoadingRoom(true);
-    setTimeout(() => {
-      const newRoom = roomStore.createRoom(
+    try {
+      const newRoom = await roomService.createRoom(
         roomName,
         category,
         currentUser.name,
         currentUser.id
       );
       setIsLoadingRoom(false);
-      syncRoomData(newRoom.id);
       closeModal();
       navigate(`/room/${newRoom.id}`);
       showToast(`اتاق «${newRoom.name}» با کد ${newRoom.id} ساخته شد.`);
-    }, 200);
+
+      setIsLoadingMessages(true);
+      chatService.connectToRoom(newRoom.id, {
+        id: currentUser.id,
+        name: currentUser.name,
+        avatarBg: currentUser.avatarBg,
+      });
+    } catch (err: unknown) {
+      setIsLoadingRoom(false);
+      const msg = err instanceof Error ? err.message : 'خطا در ساخت اتاق';
+      setRoomError(msg);
+      showToast(msg, 'error');
+    }
   };
 
-  const joinRoom = (roomId: string) => {
+  const joinRoom = async (roomId: string) => {
     const cleanId = roomId.trim().toUpperCase();
     if (!cleanId) {
       setRoomError('لطفاً کد اتاق را وارد کنید');
@@ -360,7 +405,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     setRoomError(null);
-    const roomData = roomStore.getRoom(cleanId);
+    setIsLoadingRoom(true);
+
+    const roomData = await roomService.getRoom(cleanId);
+    setIsLoadingRoom(false);
 
     if (!roomData) {
       setRoomError('اتاقی با این کد پیدا نشد');
@@ -374,18 +422,22 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setPendingRoomId(roomData.id);
       navigate(`/room/${roomData.id}`);
     } else {
-      roomStore.addMemberToRoom(roomData.id, {
+      navigate(`/room/${roomData.id}`);
+      setIsLoadingMessages(true);
+      chatService.connectToRoom(roomData.id, {
         id: currentUser.id,
         name: currentUser.name,
+        avatarBg: currentUser.avatarBg,
       });
-      syncRoomData(roomData.id);
-      navigate(`/room/${roomData.id}`);
       showToast(`ورود به اتاق «${roomData.name}» انجام شد.`);
     }
   };
 
   const leaveRoom = () => {
+    chatService.leaveRoom();
     setActiveRoom(null);
+    setMessages([]);
+    setMembers([]);
     setVoiceState({
       isCallActive: false,
       isMuted: false,
@@ -396,24 +448,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('شما از اتاق مطالعه خارج شدید.', 'info');
   };
 
-  const sendMessage = (
-    content: string,
-    attachment?: { name: string; size: string; type: 'image' | 'file'; url?: string }
-  ) => {
-    if (!content.trim() && !attachment) return;
-
-    const newMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      senderId: currentUser.id,
-      senderName: currentUser.name || 'شما',
-      senderAvatarBg: currentUser.avatarBg,
-      content,
-      timestamp: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-      isSelf: true,
-      attachment,
-    };
-
-    setMessages((prev) => [...prev, newMsg]);
+  const sendMessage = (content: string): boolean => {
+    const raw = content.trim();
+    if (!raw) return false;
+    return chatService.sendMessage(raw);
   };
 
   const sendAIQuestion = (question: string) => {
@@ -519,6 +557,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         aiMessages,
         pamphlets,
         voiceState,
+        connectionStatus,
+        isLoadingMessages,
         theme,
         toggleTheme,
         toast,

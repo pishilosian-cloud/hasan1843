@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStudyRoom } from '../context/StudyRoomContext';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { PWAInstallButton } from './ui/PWAInstallButton';
+import { roomService } from '../services/roomService';
 import {
   MessageSquare,
   Bot,
@@ -23,10 +24,32 @@ import {
 export const Lobby: React.FC = () => {
   const { openModal, theme, toggleTheme, joinRoom } = useStudyRoom();
 
-  const publicRooms = [
-    { id: 'ABC123', name: 'آمادگی امتحان حسابداری', category: 'مدیریت و حسابداری', members: 3, activeCall: false },
+  const [publicRooms, setPublicRooms] = useState<Array<{
+    id: string;
+    name: string;
+    category?: string;
+    members: number;
+    activeCall?: boolean;
+  }>>([
+    { id: 'ABC123', name: 'آمادگی امتحان حسابداری', category: 'حسابداری و مدیریت', members: 2, activeCall: false },
     { id: 'MATH101', name: 'آمادگی کنکور - ریاضی تجربی', category: 'ریاضیات', members: 1, activeCall: true },
-  ];
+  ]);
+
+  useEffect(() => {
+    roomService.getRooms().then((rooms) => {
+      if (rooms && rooms.length > 0) {
+        setPublicRooms(
+          rooms.map((r) => ({
+            id: r.id,
+            name: r.name,
+            category: r.category || 'عمومی',
+            members: r.members?.length || 1,
+            activeCall: false,
+          }))
+        );
+      }
+    });
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200" dir="rtl">
@@ -82,7 +105,7 @@ export const Lobby: React.FC = () => {
         {/* Subtle Badge Header */}
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800 text-xs font-medium mb-6">
           <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
-          <span>نسخه جدید StudyRoom با دستیار AI و تماس صوتی</span>
+          <span>چت گروهی Real-time فعال شد</span>
         </div>
 
         {/* Hero Title */}
@@ -95,7 +118,7 @@ export const Lobby: React.FC = () => {
 
         {/* Hero Subtitle */}
         <p className="text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-2xl leading-relaxed mb-10">
-          اتاق مطالعه آنلاین بسازید، لینک آن را برای دوستانتان بفرستید و در محیطی خلوت، شیک و هوشمند همراه هم چت کنید، تماس صوتی داشته باشید و اشکالات درسی را رفع کنید.
+          اتاق مطالعه آنلاین بسازید، لینک آن را برای دوستانتان بفرستید و در محیطی خلوت، شیک و هوشمند همراه هم به صورت زنده چت کنید و اشکالات درسی را رفع نمایید.
         </p>
 
         {/* Hero CTA Action Group */}
@@ -140,10 +163,10 @@ export const Lobby: React.FC = () => {
                 <MessageSquare className="w-5 h-5" />
               </div>
               <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 mb-2">
-                چت گروهی
+                چت گروهی Real-time
               </h3>
               <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                گفتگوی متنی زنده با تفکیک پیام‌های اعضا، امکان ارسال تصویر و یادداشت‌های درسی.
+                گفتگوی متنی لحظه‌ای با تفکیک پیام‌های اعضا، اسکرول هوشمند و ایزولاسیون کامل اتاق‌ها.
               </p>
             </Card>
 
@@ -194,27 +217,24 @@ export const Lobby: React.FC = () => {
             <div className="text-right">
               <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-indigo-500" />
-                اتاق‌های مطالعه فعال برای تست اولیه
+                اتاق‌های مطالعه آنلاین
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                می‌توانی بدون ساخت اتاق جدید، مستقیم وارد یکی از این اتاق‌ها شوی:
+                می‌توانی مستقیم وارد یکی از این اتاق‌ها شوی و چت زنده را تست کنی:
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-right">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-right">
             {publicRooms.map((room) => (
               <Card key={room.id} hoverable onClick={() => joinRoom(room.id)}>
                 <div className="flex items-start justify-between mb-3">
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
                     {room.category}
                   </span>
-                  {room.activeCall && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/80 px-2 py-0.5 rounded-full">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      تماس صوتی فعال
-                    </span>
-                  )}
+                  <span className="text-xs font-mono font-bold text-slate-500 dark:text-slate-400">
+                    کد: {room.id}
+                  </span>
                 </div>
 
                 <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-3">
@@ -224,7 +244,7 @@ export const Lobby: React.FC = () => {
                 <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500">
                   <div className="flex items-center gap-1">
                     <Users className="w-3.5 h-3.5" />
-                    <span>{room.members} نفر آنلاین</span>
+                    <span>{room.members} عضو</span>
                   </div>
                   <span className="text-indigo-600 dark:text-indigo-400 font-semibold flex items-center gap-1 group">
                     ورود به اتاق

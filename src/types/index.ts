@@ -57,6 +57,15 @@ export interface ChatMessage {
   };
 }
 
+export type AIMode = 'simple' | 'complex';
+
+export interface AIThinkingState {
+  isThinking: boolean;
+  question?: string;
+  userName?: string;
+  mode?: AIMode;
+}
+
 export interface AIMessage {
   id: string;
   roomId: string;
@@ -67,6 +76,7 @@ export interface AIMessage {
   message: string;
   createdAt: string;
   sources?: string[];
+  mode?: AIMode;
   isGenerating?: boolean;
 }
 
@@ -101,8 +111,8 @@ export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry';
 export type WSClientMessage =
   | { type: 'join-room'; roomId: string; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'leave-room'; roomId: string; userId: string }
-  | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string } }
-  | { type: 'ai-ask'; roomId: string; question: string; user: { id: string; name: string; avatarBg?: string } }
+  | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string }; mode?: AIMode }
+  | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'ping' };
 
 export type WSServerMessage =
@@ -114,10 +124,12 @@ export type WSServerMessage =
       members: RoomMember[];
       aiMessages: AIMessage[];
       pamphlets: PamphletFile[];
+      aiThinking?: AIThinkingState;
     }
   | { type: 'new-message'; roomId: string; message: ChatMessage }
   | { type: 'ai-message'; roomId: string; message: AIMessage }
   | { type: 'ai-history'; roomId: string; messages: AIMessage[] }
+  | { type: 'ai-thinking'; roomId: string; isThinking: boolean; question?: string; userName?: string; mode?: AIMode }
   | { type: 'pamphlet-added'; roomId: string; pamphlet: PamphletFile }
   | { type: 'presence-update'; roomId: string; members: RoomMember[] }
   | { type: 'user-joined'; roomId: string; member: RoomMember }

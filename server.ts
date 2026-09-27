@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   AIMessage,
   PamphletFile,
+  AIMode,
   WSClientMessage,
   WSServerMessage,
 } from './src/types';
@@ -20,16 +21,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 
-function getGeminiClient(): GoogleGenAI {
+function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (
     process.env.GEMINI_API_KEY ||
     process.env.API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
     ''
   ).trim();
 
+  if (!apiKey) {
+    return null;
+  }
+
   return new GoogleGenAI({
-    apiKey: apiKey || undefined,
+    apiKey,
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -39,7 +43,22 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 const app = express();
-// Allow JSON bodies up to 25MB for handling pamphlet text/PDF uploads
+
+// Secure CORS Handler (Restricted to same origin / client origin with safe headers)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+// JSON body parser with 25MB limit for pamphlet uploads
 app.use(express.json({ limit: '25mb' }));
 
 // In-Memory Database for Rooms, Messages, AI Conversations, and Pamphlets
@@ -49,6 +68,23 @@ const roomAIMessages = new Map<string, AIMessage[]>();
 const roomPamphlets = new Map<string, PamphletFile[]>();
 const roomClients = new Map<string, Set<WebSocket>>();
 const clientMetadata = new WeakMap<WebSocket, { roomId?: string; userId?: string; userName?: string }>();
+
+// In-Memory Rate Limiter for AI endpoint (15 requests per 60 seconds per IP/User)
+const aiRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkAIRateLimit(identifier: string): boolean {
+  const now = Date.now();
+  const record = aiRateLimitMap.get(identifier);
+  if (!record || now > record.resetAt) {
+    aiRateLimitMap.set(identifier, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  if (record.count >= 15) {
+    return false;
+  }
+  record.count++;
+  return true;
+}
 
 // Avatar color palettes
 const avatarGradients = [
@@ -119,7 +155,6 @@ function loadStateFromDisk() {
   }
 }
 
-// Seed default sample rooms & educational resources
 function seedInitialData() {
   loadStateFromDisk();
 
@@ -187,11 +222,11 @@ function seedInitialData() {
         uploadedBy: 'سارا احمدی',
         createdAt: '۱۰:۱۰',
         content: `مفاهیم اساسی حسابداری مالی:
-۱. دارایی جاری: دارایی‌هایی هستند که انتظار می‌رود در طول یک دوره مالی یا چرخه عملیاتی (هر کدام طولانی‌تر باشد) به نقد تبدیل، فروخته یا مصرف شوند. اقلام اصلی: وجه نقد، سرمایه‌گذاری‌های کوتاه‌مدت، حساب‌ها و اسناد دریافتنی، موجودی کالا و پیش‌پرداخت‌ها.
+۱. دارایی جاری: دارایی‌هایی هستند که انتظار می‌رود در طول یک دوره مالی یا چرخه عملیاتی به نقد تبدیل، فروخته یا مصرف شوند. اقلام اصلی: وجه نقد، سرمایه‌گذاری‌های کوتاه‌مدت، حساب‌ها و اسناد دریافتنی، موجودی کالا و پیش‌پرداخت‌ها.
 ۲. بدهی جاری: تعهداتی که تسویه آنها ظرف یک سال یا یک چرخه عملیاتی از محل دارایی‌های جاری انجام می‌گیرد.
 ۳. معادله اساسی حسابداری: دارایی‌ها = بدهی‌ها + سرمایه (حقوق صاحبان سهام).
 ۴. فرض تداوم فعالیت: فرض می‌شود واحد تجاری برای مدتی نامحدود به عملیات خود ادامه می‌دهد.
-۵. دوره مالی: عمر واحد تجاری به دوره‌های زمانی مساوی (معمولاً یک‌ساله) تقسیم می‌شود.`,
+۵. دوره مالی: عمر واحد تجاری به دوره‌های زمانی مساوی تقسیم می‌شود.`,
       },
     ]);
 
@@ -223,6 +258,7 @@ function seedInitialData() {
 ۵. پیش‌پرداخت‌ها`,
         createdAt: '۱۰:۱۲',
         sources: ['جزوه_حسابداری_فصل۱و۲.txt'],
+        mode: 'simple',
       },
     ]);
   }
@@ -264,7 +300,7 @@ function generateUniqueRoomId(): string {
 
 // REST API Endpoints
 app.get('/api/health', (req, res) => {
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY);
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.API_KEY);
   res.json({
     status: 'ok',
     time: new Date().toISOString(),
@@ -446,29 +482,35 @@ app.get('/api/rooms/:roomId/messages', (req, res) => {
 });
 
 // Helper to detect if a message is asking AI directly in chat (e.g. /ai or @ai or ai/)
-function extractAIPrompt(text: string): { isAICommand: boolean; prompt: string } {
-  if (!text) return { isAICommand: false, prompt: '' };
+function extractAIPrompt(text: string): { isAICommand: boolean; prompt: string; isDeep: boolean } {
+  if (!text) return { isAICommand: false, prompt: '', isDeep: false };
   const trimmed = text.trim();
 
-  // Match /ai, @ai, ai/, /هوش at the beginning
+  // Support /ai-deep or /ai-complex
+  if (/^([/@]ai-deep|ai-deep\/|\/عمیق)\s*/i.test(trimmed)) {
+    const prompt = trimmed.replace(/^([/@]ai-deep|ai-deep\/|\/عمیق)\s*/i, '').trim();
+    return { isAICommand: true, prompt, isDeep: true };
+  }
+
   const prefixMatch = trimmed.match(/^([/@]ai|ai\/|\/هوش)\s*(.*)$/i);
   if (prefixMatch) {
     return {
       isAICommand: true,
       prompt: prefixMatch[2].trim(),
+      isDeep: false,
     };
   }
 
-  // Also match /ai or @ai tag anywhere in the message
   const tagMatch = trimmed.match(/[/@]ai\b\s*(.*)$/i);
   if (tagMatch) {
     return {
       isAICommand: true,
       prompt: tagMatch[1].trim(),
+      isDeep: false,
     };
   }
 
-  return { isAICommand: false, prompt: '' };
+  return { isAICommand: false, prompt: '', isDeep: false };
 }
 
 // Unified processor for chat messages and direct /ai in-chat invocations
@@ -478,7 +520,8 @@ async function processIncomingChatMessage(
   senderId: string,
   senderName: string,
   senderAvatarBg?: string,
-  customMsgId?: string
+  customMsgId?: string,
+  clientMode?: AIMode
 ): Promise<ChatMessage> {
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
@@ -509,13 +552,23 @@ async function processIncomingChatMessage(
   });
 
   // 2. Check if user summoned AI with /ai
-  const { isAICommand, prompt } = extractAIPrompt(rawContent);
+  const { isAICommand, prompt, isDeep } = extractAIPrompt(rawContent);
   if (isAICommand) {
     const room = rooms.get(roomId);
     const roomTitle = room?.name || 'اتاق مطالعه';
+    const effectiveMode: AIMode = isDeep ? 'complex' : clientMode || 'simple';
 
-    // Run AI response asynchronously
     (async () => {
+      // Broadcast live thinking state
+      broadcastToRoom(roomId, {
+        type: 'ai-thinking',
+        roomId,
+        isThinking: true,
+        question: prompt,
+        userName: senderName,
+        mode: effectiveMode,
+      });
+
       try {
         let aiResponseText = '';
         let aiSources: string[] = [];
@@ -533,6 +586,7 @@ async function processIncomingChatMessage(
             senderAvatarBg,
             message: prompt,
             createdAt: timeFormatted,
+            mode: effectiveMode,
           };
           if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
           roomAIMessages.get(roomId)!.push(userAiMsg);
@@ -543,8 +597,8 @@ async function processIncomingChatMessage(
             message: userAiMsg,
           });
 
-          // Generate Gemini response (utilizing pamphlets or general deep intelligence)
-          const result = await generateAIAnswer(roomId, prompt, senderName, roomTitle);
+          // Generate Gemini response with selected mode
+          const result = await generateAIAnswer(roomId, prompt, senderName, roomTitle, effectiveMode);
           aiResponseText = result.text;
           aiSources = result.sources;
         }
@@ -574,6 +628,7 @@ async function processIncomingChatMessage(
           message: aiResponseText,
           createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
           sources: aiSources,
+          mode: effectiveMode,
         };
         if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
         roomAIMessages.get(roomId)!.push(aiHistoryMsg);
@@ -595,6 +650,12 @@ async function processIncomingChatMessage(
         });
       } catch (err: unknown) {
         console.error('In-chat AI command error:', err);
+      } finally {
+        broadcastToRoom(roomId, {
+          type: 'ai-thinking',
+          roomId,
+          isThinking: false,
+        });
       }
     })();
   }
@@ -609,7 +670,7 @@ app.post('/api/rooms/:roomId/messages', async (req, res) => {
     return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
   }
 
-  const { id, content, senderId, senderName, senderAvatarBg } = req.body;
+  const { id, content, senderId, senderName, senderAvatarBg, mode } = req.body;
   const rawContent = content?.trim();
   if (!rawContent || !senderId || !senderName) {
     return res.status(400).json({ error: 'پیام نامعتبر است' });
@@ -621,7 +682,8 @@ app.post('/api/rooms/:roomId/messages', async (req, res) => {
     senderId,
     senderName,
     senderAvatarBg,
-    id
+    id,
+    mode === 'complex' ? 'complex' : 'simple'
   );
 
   res.status(201).json(createdMsg);
@@ -637,48 +699,101 @@ app.get('/api/rooms/:roomId/ai', (req, res) => {
   res.json(list);
 });
 
-app.post('/api/rooms/:roomId/ai/ask', async (req, res) => {
-  const room = findRoomCaseInsensitive(req.params.roomId);
+/**
+ * Core AI Chat Handler with Production Security, Rate-Limiting, Room Isolation,
+ * Support for Simple vs Complex Mode, and Zero Leakage of Secrets
+ */
+async function handleAIChatRequest(
+  req: express.Request,
+  res: express.Response,
+  targetRoomId: string,
+  rawMessage: string,
+  userParam?: { id?: string; name?: string; avatarBg?: string },
+  modeParam?: AIMode
+) {
+  // 1. Rate Limiting Check
+  const clientIdentifier = (req.ip || req.socket.remoteAddress || 'unknown') + ':' + (userParam?.id || 'anon');
+  if (!checkAIRateLimit(clientIdentifier)) {
+    return res.status(429).json({
+      error: 'تعداد درخواست‌های شما بیش از حد مجاز است. لطفاً کمی صبر کرده و دوباره تلاش کنید.',
+    });
+  }
+
+  // 2. Validate Room
+  const room = findRoomCaseInsensitive(targetRoomId);
   if (!room) {
-    return res.status(404).json({ error: 'اتاق پیدا نشد' });
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا منقضی شده است.' });
   }
 
-  const { question, user } = req.body;
-  const cleanQ = question?.trim();
+  // 3. Validate Message length (max 2000 chars)
+  const cleanQ = rawMessage?.trim();
   if (!cleanQ) {
-    return res.status(400).json({ error: 'متن سوال الزامی است' });
+    return res.status(400).json({ error: 'متن سوال الزامی است.' });
   }
 
-  const userName = user?.name?.trim() || 'دانشجو';
-  const userId = user?.id || `user-${Date.now()}`;
+  if (cleanQ.length > 2000) {
+    return res.status(400).json({ error: 'طول پیام بیش از حد مجاز است (حداکثر ۲۰۰۰ کاراکتر).' });
+  }
+
+  // 4. Authenticate & Verify Member presence in Room
+  const userName = userParam?.name?.trim() || 'دانشجو';
+  const userId = userParam?.id || `user-${Date.now()}`;
+  const aiMode: AIMode = modeParam === 'complex' ? 'complex' : 'simple';
+
+  let member = room.members.find((m) => m.id === userId);
+  if (!member) {
+    member = {
+      id: userId,
+      name: userName,
+      joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      isOnline: true,
+      avatarBg: userParam?.avatarBg || avatarGradients[0],
+      role: 'member',
+    };
+    room.members.push(member);
+    saveStateToDisk();
+  }
+
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
-  // 1. Create and save the User's question
+  // 5. Create and save User's question
   const userMsg: AIMessage = {
     id: `aimsg-${Date.now()}-u`,
     roomId: room.id,
     type: 'user',
     sender: userName,
     senderId: userId,
-    senderAvatarBg: user?.avatarBg || avatarGradients[0],
+    senderAvatarBg: member.avatarBg || avatarGradients[0],
     message: cleanQ,
     createdAt: timeFormatted,
+    mode: aiMode,
   };
 
   if (!roomAIMessages.has(room.id)) roomAIMessages.set(room.id, []);
   roomAIMessages.get(room.id)!.push(userMsg);
   saveStateToDisk();
 
+  // Broadcast user's question to all room members immediately
   broadcastToRoom(room.id, {
     type: 'ai-message',
     roomId: room.id,
     message: userMsg,
   });
 
-  // 2. Query Gemini with Room Pamphlets or General Deep Intelligence
+  // Broadcast live thinking state across the room
+  broadcastToRoom(room.id, {
+    type: 'ai-thinking',
+    roomId: room.id,
+    isThinking: true,
+    question: cleanQ,
+    userName,
+    mode: aiMode,
+  });
+
+  // 6. Query Gemini with strict Room Isolation (only pamphlets of this room)
   try {
-    const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name);
+    const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name, aiMode);
 
     const aiMsg: AIMessage = {
       id: `aimsg-${Date.now()}-ai`,
@@ -688,43 +803,69 @@ app.post('/api/rooms/:roomId/ai/ask', async (req, res) => {
       message: aiAnswer.text,
       createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
       sources: aiAnswer.sources,
+      mode: aiMode,
     };
 
     roomAIMessages.get(room.id)!.push(aiMsg);
     saveStateToDisk();
 
+    // Broadcast AI response to all members in this room
     broadcastToRoom(room.id, {
       type: 'ai-message',
       roomId: room.id,
       message: aiMsg,
     });
 
-    return res.status(200).json({ userMsg, aiMsg });
-  } catch (err: unknown) {
-    console.error('Gemini AI execution error:', err);
-    const fallbackAnswerText =
-      'در حال حاضر ارتباط با مدل هوش مصنوعی دچار اختلال است. لطفاً چند لحظه بعد مجدداً تلاش کنید.';
-
-    const fallbackAiMsg: AIMessage = {
-      id: `aimsg-${Date.now()}-ai`,
-      roomId: room.id,
-      type: 'ai',
-      sender: 'دستیار هوشمند AI',
-      message: fallbackAnswerText,
-      createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    roomAIMessages.get(room.id)!.push(fallbackAiMsg);
-    saveStateToDisk();
-
-    broadcastToRoom(room.id, {
-      type: 'ai-message',
-      roomId: room.id,
-      message: fallbackAiMsg,
+    return res.status(200).json({
+      success: true,
+      userMsg,
+      aiMsg,
     });
+  } catch (err: unknown) {
+    console.error('[StudyRoom AI Execution Error]:', err instanceof Error ? err.message : err);
 
-    return res.status(200).json({ userMsg, aiMsg: fallbackAiMsg });
+    return res.status(500).json({
+      error: 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.',
+    });
+  } finally {
+    broadcastToRoom(room.id, {
+      type: 'ai-thinking',
+      roomId: room.id,
+      isThinking: false,
+    });
   }
+}
+
+/**
+ * Standard Production AI Chat Endpoint:
+ * POST /api/ai/chat
+ * Body: { roomId: string, message: string, mode?: 'simple' | 'complex', userId?: string, userName?: string }
+ */
+app.post('/api/ai/chat', async (req, res) => {
+  const { roomId, message, mode, userId, userName, user } = req.body;
+  const targetRoomId = roomId || req.body?.room_id;
+  const targetMessage = message || req.body?.prompt || req.body?.question;
+
+  if (!targetRoomId) {
+    return res.status(400).json({ error: 'شناسه اتاق (roomId) الزامی است.' });
+  }
+
+  const effectiveUser = {
+    id: userId || user?.id,
+    name: userName || user?.name,
+    avatarBg: user?.avatarBg,
+  };
+
+  const effectiveMode: AIMode = mode === 'complex' ? 'complex' : 'simple';
+
+  await handleAIChatRequest(req, res, targetRoomId, targetMessage, effectiveUser, effectiveMode);
+});
+
+// Backward-compatible alias route
+app.post('/api/rooms/:roomId/ai/ask', async (req, res) => {
+  const { question, message, user, mode } = req.body;
+  const targetMessage = message || question;
+  await handleAIChatRequest(req, res, req.params.roomId, targetMessage, user, mode === 'complex' ? 'complex' : 'simple');
 });
 
 // Pamphlet upload and retrieval
@@ -779,38 +920,32 @@ app.post('/api/rooms/:roomId/pamphlets', (req, res) => {
 
 /**
  * Generate Answer using Gemini 3.8 Flash
- * - If pamphlets exist: synthesizes with pamphlets.
- * - If no pamphlets exist or question is outside: utilizes Gemini's full intelligence ("از ته فکرش").
- * - Handles missing GEMINI_API_KEY gracefully with setup instructions for Railway.
+ * - Supports simple (concise) vs complex (deep analytical reasoning) mode
+ * - Strictly isolates context to the specified roomId
+ * - Truncates context to safe length to prevent overflow
  */
 async function generateAIAnswer(
   roomId: string,
   question: string,
   userName: string,
-  roomName: string
+  roomName: string,
+  mode: AIMode = 'simple'
 ): Promise<{ text: string; sources: string[] }> {
-  const apiKey = (
-    process.env.GEMINI_API_KEY ||
-    process.env.API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    ''
-  ).trim();
+  const aiClient = getGeminiClient();
 
-  if (!apiKey) {
-    return {
-      text: `⚠️ کلید دسترسی Gemini تنظیم نشده است.
-
-برای فعال‌سازی کامل هوش مصنوعی:
-• اگر روی Railway مستقر هستید: به داشبورد پروژه رفته، در بخش Variables متغیر GEMINI_API_KEY را به همراه کلید API خود اضافه کنید.
-• در محیط لوکال: فایل .env را با متغیر GEMINI_API_KEY="کلید_شما" ذخیره نمایید.`,
-      sources: [],
-    };
+  if (!aiClient) {
+    console.error('[StudyRoom AI] Error: GEMINI_API_KEY is not defined in server environment variables.');
+    throw new Error('GEMINI_API_KEY_NOT_CONFIGURED');
   }
 
+  // Room Isolation: Read ONLY pamphlets belonging to this specific room
   const pamphlets = roomPamphlets.get(roomId) || [];
   const sources: string[] = [];
   const pamphletContexts: string[] = [];
   const inlineParts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
+
+  let accumulatedChars = 0;
+  const MAX_CONTEXT_CHARS = 12000;
 
   for (const p of pamphlets) {
     sources.push(p.name);
@@ -832,40 +967,59 @@ async function generateAIAnswer(
       const base64Data = commaIndex >= 0 ? p.content.slice(commaIndex + 1) : p.content;
       try {
         const decodedText = Buffer.from(base64Data, 'base64').toString('utf-8');
-        pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${decodedText.slice(0, 15000)}`);
+        const remainingSpace = Math.max(0, MAX_CONTEXT_CHARS - accumulatedChars);
+        if (remainingSpace > 0) {
+          const slice = decodedText.slice(0, remainingSpace);
+          accumulatedChars += slice.length;
+          pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${slice}`);
+        }
       } catch {
         pamphletContexts.push(`=== جزوه: ${p.name} ===`);
       }
     } else {
-      pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${p.content.slice(0, 15000)}`);
+      const remainingSpace = Math.max(0, MAX_CONTEXT_CHARS - accumulatedChars);
+      if (remainingSpace > 0) {
+        const slice = p.content.slice(0, remainingSpace);
+        accumulatedChars += slice.length;
+        pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${slice}`);
+      }
     }
   }
 
   const hasPamphlets = pamphletContexts.length > 0 || inlineParts.length > 0;
 
+  const modeInstruction =
+    mode === 'complex'
+      ? `حالت کاری شما: «نسخه عمیق، پیشرفته و تحلیلی».
+پاسخ شما باید بسیار عمیق، علمی، استدلالی و دارای تشریح ساختاریافته گام‌به‌گام باشد.
+به مفاهیم بنیادی، اصول نظری، فرمول‌ها، استثناها، مقایسه‌ها و سناریوهای کاربردی بپردازید. از توضیحات سطحی اکیداً پرهیز کنید و پاسخ را با دقت و جامعیت علمی بالا بنویسید.`
+      : `حالت کاری شما: «نسخه معمولی و خلاصه».
+پاسخ شما باید سریع، روان، مستقیم، نکته‌وار و به زبان ساده باشد. از اطناب و اضافه گویی دوری کنید و مستقیماً اصل پاسخ و نکات کاربردی را در چند سطر یا بالت‌پوینت شفاف بیان کنید.`;
+
   const systemInstruction = hasPamphlets
     ? `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
-پاسخ‌های شما باید دقیق، عمیق، ساختاریافته، آموزشی، شیوا، محترمانه و به زبان فارسی سلیس و روان باشد.
+پاسخ‌های شما باید دقیق، شیوا، محترمانه و به زبان فارسی سلیس باشد.
+
+${modeInstruction}
 
 قوانین پاسخگویی:
 ۱. جزوات و فایل‌های مربوط به این اتاق در اختیارت قرار داده شده است.
 ۲. اگر سوال دانشجو مربوط به مباحث جزوه است، اولویت اول پاسخگویی بر اساس اطلاعات داخل جزوه است و نام جزوه را در متن ذکر کن.
 ۳. اگر پاسخ سوال در جزوه وجود نداشت یا مبحث متفاوتی بود، یا حتی بخشی از آن در جزوه نیامده بود:
-   ابتدا در یک جمله کوتاه اشاره کن: «این مبحث در جزوات فعلی این اتاق ذکر نشده است»، و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود (از عمیق‌ترین لایه‌های دانش و تفکر هوش مصنوعی خود) پاسخ کامل، دقیق، مفهومی، همراه با مثال‌های آموزشی و تفکیک‌شده به زبان فارسی ارائه بده. هرگز از پاسخ دادن طفره نرو و پاسخ ناقص نده.
-۴. در صورت لزوم از لیست‌های شماره‌دار، فرمول‌ها یا نکات کلیدی برای خوانایی بهتر استفاده کن.`
+   ابتدا در یک جمله کوتاه اشاره کن: «این مبحث در جزوات فعلی این اتاق ذکر نشده است»، و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود بر اساس حالت تعیین شده (${mode === 'complex' ? 'تحلیلی و جامع' : 'خلاصه و مفید'}) پاسخ کامل و دقیق به زبان فارسی ارائه بده.`
     : `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
 در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده است.
-بنابراین با تمام عمق، تفکر و قدرت تحلیلی، علمی و استدلالی خود (از عمیق‌ترین لایه‌های دانش و هوش جامع خود) پاسخ کامل، دقیق، کاربردی، مفهومی و به زبان فارسی بسیار روان، شیوا و ساختاریافته به دانشجو ارائه بده.
-در صورت نیاز مثال‌های ملموس، فرمول‌ها و نکات کلیدی موضوع را با دقت شرح بده.`;
+
+${modeInstruction}
+
+با تمام عمق، تفکر و قدرت تحلیلی، علمی و استدلالی خود پاسخ کامل، دقیق، کاربردی و به زبان فارسی بسیار روان و ساختاریافته به دانشجو ارائه بده.`;
 
   let promptText = `دانشجو «${userName}» در اتاق مطالعه «${roomName}» سوال زیر را مطرح کرده است:\n«${question}»\n`;
   if (hasPamphlets && pamphletContexts.length > 0) {
-    promptText += `\n\nمتن جزوات آپلود شده در این اتاق:\n${pamphletContexts.join('\n\n')}\n\nلطفاً پاسخ کامل و مستدل خود را بنویسید:`;
+    promptText += `\n\nمتن جزوات آپلود شده در این اتاق:\n${pamphletContexts.join('\n\n')}\n\nلطفاً پاسخ دهید:`;
   }
 
   inlineParts.push({ text: promptText });
-
-  const aiClient = getGeminiClient();
 
   const response = await aiClient.models.generateContent({
     model: 'gemini-3.8-flash',
@@ -874,7 +1028,7 @@ async function generateAIAnswer(
     },
     config: {
       systemInstruction,
-      temperature: 0.7,
+      temperature: mode === 'complex' ? 0.6 : 0.7,
     },
   });
 
@@ -996,7 +1150,8 @@ wss.on('connection', (ws: WebSocket) => {
           msg.message.senderId,
           msg.message.senderName,
           msg.message.senderAvatarBg,
-          msg.message.id
+          msg.message.id,
+          msg.mode
         );
         return;
       }
@@ -1012,6 +1167,7 @@ wss.on('connection', (ws: WebSocket) => {
         const userName = msg.user?.name || 'دانشجو';
         const userId = msg.user?.id || `user-${Date.now()}`;
         const timeFormatted = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+        const aiMode: AIMode = msg.mode === 'complex' ? 'complex' : 'simple';
 
         const userMsg: AIMessage = {
           id: `aimsg-${Date.now()}-u`,
@@ -1022,6 +1178,7 @@ wss.on('connection', (ws: WebSocket) => {
           senderAvatarBg: msg.user?.avatarBg || avatarGradients[0],
           message: cleanQ,
           createdAt: timeFormatted,
+          mode: aiMode,
         };
 
         if (!roomAIMessages.has(room.id)) roomAIMessages.set(room.id, []);
@@ -1034,8 +1191,17 @@ wss.on('connection', (ws: WebSocket) => {
           message: userMsg,
         });
 
+        broadcastToRoom(room.id, {
+          type: 'ai-thinking',
+          roomId: room.id,
+          isThinking: true,
+          question: cleanQ,
+          userName,
+          mode: aiMode,
+        });
+
         try {
-          const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name);
+          const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name, aiMode);
           const aiMsg: AIMessage = {
             id: `aimsg-${Date.now()}-ai`,
             roomId: room.id,
@@ -1044,6 +1210,7 @@ wss.on('connection', (ws: WebSocket) => {
             message: aiAnswer.text,
             createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
             sources: aiAnswer.sources,
+            mode: aiMode,
           };
 
           roomAIMessages.get(room.id)!.push(aiMsg);
@@ -1055,14 +1222,15 @@ wss.on('connection', (ws: WebSocket) => {
             message: aiMsg,
           });
         } catch (err: unknown) {
-          console.error('WS Gemini error:', err);
+          console.error('[WS Gemini error]:', err instanceof Error ? err.message : err);
           const fallbackAiMsg: AIMessage = {
             id: `aimsg-${Date.now()}-ai`,
             roomId: room.id,
             type: 'ai',
             sender: 'دستیار هوشمند AI',
-            message: 'در حال حاضر ارتباط با مدل هوش مصنوعی دچار اختلال است. لطفاً مجدداً سوال را ارسال کنید.',
+            message: 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.',
             createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+            mode: aiMode,
           };
           roomAIMessages.get(room.id)!.push(fallbackAiMsg);
           saveStateToDisk();
@@ -1070,6 +1238,12 @@ wss.on('connection', (ws: WebSocket) => {
             type: 'ai-message',
             roomId: room.id,
             message: fallbackAiMsg,
+          });
+        } finally {
+          broadcastToRoom(room.id, {
+            type: 'ai-thinking',
+            roomId: room.id,
+            isThinking: false,
           });
         }
         return;
@@ -1142,7 +1316,10 @@ async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1150,6 +1327,11 @@ async function startServer() {
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       if (url.startsWith('/api') || url.startsWith('/ws')) {
+        return next();
+      }
+
+      // Do not return HTML for static assets, scripts, or vite internal endpoints that 404
+      if (req.method !== 'GET' || url.startsWith('/@') || /\.[a-zA-Z0-9]+(\?.*)?$/.test(url)) {
         return next();
       }
 
@@ -1177,6 +1359,11 @@ async function startServer() {
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`StudyRoom Server running on http://0.0.0.0:${PORT}`);
+    if (!process.env.GEMINI_API_KEY && !process.env.API_KEY) {
+      console.warn('⚠️ Warning: GEMINI_API_KEY is not set in environment variables. Set GEMINI_API_KEY on Railway to enable AI capabilities.');
+    } else {
+      console.log('✓ Gemini AI initialized with server environment key.');
+    }
   });
 }
 

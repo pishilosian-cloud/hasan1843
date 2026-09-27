@@ -9,6 +9,8 @@ import {
   ModalType,
   ConnectionStatus,
   RoomMember,
+  AIMode,
+  AIThinkingState,
 } from '../types';
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
@@ -28,6 +30,9 @@ interface StudyRoomContextType {
   aiMessages: AIMessage[];
   pamphlets: PamphletFile[];
   isAskingAI: boolean;
+  aiMode: AIMode;
+  setAiMode: (mode: AIMode) => void;
+  aiThinking: AIThinkingState;
   voiceState: VoiceState;
   connectionStatus: ConnectionStatus;
   isLoadingMessages: boolean;
@@ -48,7 +53,7 @@ interface StudyRoomContextType {
   currentPath: string;
 
   sendMessage: (content: string) => boolean;
-  sendAIQuestion: (question: string) => Promise<void>;
+  sendAIQuestion: (question: string, overrideMode?: AIMode) => Promise<void>;
   uploadPamphlet: (file: File) => Promise<void>;
 
   toggleVoiceCall: () => void;
@@ -95,6 +100,12 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
   const [isAskingAI, setIsAskingAI] = useState<boolean>(false);
+  const [aiMode, setAiModeState] = useState<AIMode>(() => {
+    const saved = localStorage.getItem('studyroom_ai_mode');
+    return saved === 'complex' ? 'complex' : 'simple';
+  });
+
+  const [aiThinking, setAiThinking] = useState<AIThinkingState>({ isThinking: false });
   const [roomError, setRoomError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
@@ -115,6 +126,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
 
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  const setAiMode = (mode: AIMode) => {
+    setAiModeState(mode);
+    localStorage.setItem('studyroom_ai_mode', mode);
+  };
 
   const showToast = useCallback((text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ text, type });
@@ -200,6 +216,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (data.pamphlets) {
         setPamphlets(data.pamphlets);
       }
+      if (data.aiThinking) {
+        setAiThinking(data.aiThinking);
+      }
     });
 
     const unsubNewMsg = chatService.onNewMessage((newMsg) => {
@@ -215,11 +234,17 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           },
         ];
       });
+      // If AI answered, reset thinking indicator
+      if (newMsg.isAI) {
+        setAiThinking({ isThinking: false });
+        setIsAskingAI(false);
+      }
     });
 
     const unsubAIMsg = chatService.onAIMessage((newAIMsg) => {
       if (newAIMsg.type === 'ai') {
         setIsAskingAI(false);
+        setAiThinking({ isThinking: false });
       }
       setAiMessages((prev) => {
         if (prev.some((m) => m.id === newAIMsg.id)) {
@@ -230,8 +255,23 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
 
     const unsubAIHistory = chatService.onAIHistory((history) => {
-      setAiMessages(history);
+      setAiMessages((prev) => {
+        // Compare to prevent useless re-render scroll jumps
+        if (prev.length === history.length && prev[prev.length - 1]?.id === history[history.length - 1]?.id) {
+          return prev;
+        }
+        return history;
+      });
       setIsAskingAI(false);
+    });
+
+    const unsubAIThinking = chatService.onAIThinking((thinkingState) => {
+      setAiThinking(thinkingState);
+      if (thinkingState.isThinking) {
+        setIsAskingAI(true);
+      } else {
+        setIsAskingAI(false);
+      }
     });
 
     const unsubPamphlet = chatService.onPamphletAdded((newPamphlet) => {
@@ -258,6 +298,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const unsubError = chatService.onError((errMsg) => {
       setIsAskingAI(false);
+      setAiThinking({ isThinking: false });
       showToast(errMsg, 'error');
     });
 
@@ -266,6 +307,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubNewMsg();
       unsubAIMsg();
       unsubAIHistory();
+      unsubAIThinking();
       unsubPamphlet();
       unsubPresence();
       unsubStatus();
@@ -515,6 +557,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAiMessages([]);
     setPamphlets([]);
     setIsAskingAI(false);
+    setAiThinking({ isThinking: false });
     setVoiceState({
       isCallActive: false,
       isMuted: false,
@@ -528,19 +571,27 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const sendMessage = (content: string): boolean => {
     const raw = content.trim();
     if (!raw) return false;
-    return chatService.sendMessage(raw);
+    return chatService.sendMessage(raw, aiMode);
   };
 
-  // Shared Room AI Question
-  const sendAIQuestion = async (question: string) => {
+  // Shared Room AI Question with selectable mode (simple vs complex)
+  const sendAIQuestion = async (question: string, overrideMode?: AIMode) => {
     const cleanQ = question.trim();
     if (!cleanQ || isAskingAI) return;
 
+    const modeToUse = overrideMode || aiMode;
     setIsAskingAI(true);
-    const success = await chatService.askAI(cleanQ);
+    setAiThinking({
+      isThinking: true,
+      question: cleanQ,
+      userName: currentUser.name || 'شما',
+      mode: modeToUse,
+    });
+
+    const success = await chatService.askAI(cleanQ, modeToUse);
     if (!success) {
       setIsAskingAI(false);
-      showToast('خطا در ارسال سوال به دستیار هوشمند', 'error');
+      setAiThinking({ isThinking: false });
     }
   };
 
@@ -557,7 +608,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ? `${(file.size / 1024).toFixed(0)} کیلوبایت`
         : `${(file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
 
-    // Read content based on type
     const reader = new FileReader();
 
     reader.onload = async () => {
@@ -678,6 +728,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         aiMessages,
         pamphlets,
         isAskingAI,
+        aiMode,
+        setAiMode,
+        aiThinking,
         voiceState,
         connectionStatus,
         isLoadingMessages,

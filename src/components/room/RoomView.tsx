@@ -6,10 +6,11 @@ import { AIPanel } from './AIPanel';
 import { ChatMessageItem } from './ChatMessageItem';
 import { ChatInput } from './ChatInput';
 import { Drawer } from '../ui/Drawer';
-import { MessageSquare, ArrowDown, RefreshCw, Loader2 } from 'lucide-react';
+import { Avatar } from '../ui/Avatar';
+import { MessageSquare, ArrowDown, RefreshCw, Loader2, Bot, Sparkles } from 'lucide-react';
 
 export const RoomView: React.FC = () => {
-  const { messages, isLoadingMessages, connectionStatus } = useStudyRoom();
+  const { messages, isLoadingMessages, connectionStatus, aiThinking } = useStudyRoom();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
@@ -52,13 +53,9 @@ export const RoomView: React.FC = () => {
   // Scroll handling on new messages
   useEffect(() => {
     const countIncreased = messages.length > prevMessagesCountRef.current;
-    const isNew = countIncreased;
     prevMessagesCountRef.current = messages.length;
 
-    if (!isNew) {
-      if (messages.length > 0) {
-        scrollToBottom(false);
-      }
+    if (!countIncreased) {
       return;
     }
 
@@ -69,6 +66,13 @@ export const RoomView: React.FC = () => {
       setUnreadCount((prev) => prev + 1);
     }
   }, [messages, scrollToBottom]);
+
+  // Scroll down when AI starts thinking so the thinking indicator is in view
+  useEffect(() => {
+    if (aiThinking.isThinking && isNearBottomRef.current) {
+      scrollToBottom(true);
+    }
+  }, [aiThinking.isThinking, scrollToBottom]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
@@ -122,6 +126,34 @@ export const RoomView: React.FC = () => {
               messages.map((msg) => (
                 <ChatMessageItem key={msg.id} message={msg} />
               ))
+            )}
+
+            {/* Live In-Chat AI Thinking Indicator */}
+            {aiThinking.isThinking && (
+              <div className="flex gap-2.5 my-3 max-w-[90%] sm:max-w-[80%] animate-in fade-in duration-200">
+                <Avatar name="AI" isAI size="md" />
+                <div className="flex flex-col text-right">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-bold text-purple-700 dark:text-purple-300 flex items-center gap-1">
+                      <Bot className="w-3.5 h-3.5" />
+                      🤖 دستیار هوشمند AI
+                    </span>
+                    <span className="text-[10px] text-purple-500 font-mono">در حال تحلیل...</span>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl rounded-tr-xs bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 dark:from-purple-950/40 dark:via-indigo-950/30 dark:to-purple-950/40 border border-purple-200/80 dark:border-purple-800/60 shadow-xs text-xs text-purple-900 dark:text-purple-200 flex items-center gap-2.5">
+                    <Sparkles className="w-4 h-4 text-purple-600 animate-spin shrink-0" />
+                    <span className="font-semibold">
+                      جمینای در حال تفکر و آماده‌سازی پاسخ {aiThinking.mode === 'complex' ? 'تحلیلی و عمیق' : 'خلاصه'} است...
+                    </span>
+                    <div className="flex gap-1 shrink-0 mr-auto">
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce [animation-delay:-0.3s]"></span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce [animation-delay:-0.15s]"></span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 

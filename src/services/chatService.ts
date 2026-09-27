@@ -5,6 +5,8 @@ import {
   ConnectionStatus,
   AIMessage,
   PamphletFile,
+  AIMode,
+  AIThinkingState,
   WSClientMessage,
   WSServerMessage,
 } from '../types';
@@ -17,9 +19,11 @@ type InitHandler = (data: {
   members: RoomMember[];
   aiMessages?: AIMessage[];
   pamphlets?: PamphletFile[];
+  aiThinking?: AIThinkingState;
 }) => void;
 type AIMessageHandler = (message: AIMessage) => void;
 type AIHistoryHandler = (messages: AIMessage[]) => void;
+type AIThinkingHandler = (thinking: AIThinkingState) => void;
 type PamphletHandler = (pamphlet: PamphletFile) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type ErrorHandler = (error: string) => void;
@@ -37,11 +41,15 @@ class ChatService {
   private intentionalDisconnect = false;
   private isWsHealthy = false;
 
+  private cachedAIMsgCount = 0;
+  private cachedLastAIMsgId = '';
+
   private messageListeners = new Set<MessageHandler>();
   private presenceListeners = new Set<PresenceHandler>();
   private initListeners = new Set<InitHandler>();
   private aiMessageListeners = new Set<AIMessageHandler>();
   private aiHistoryListeners = new Set<AIHistoryHandler>();
+  private aiThinkingListeners = new Set<AIThinkingHandler>();
   private pamphletListeners = new Set<PamphletHandler>();
   private statusListeners = new Set<StatusHandler>();
   private errorListeners = new Set<ErrorHandler>();
@@ -67,14 +75,16 @@ class ChatService {
     this.currentRoomId = cleanRoomId;
     this.currentUser = user;
     this.reconnectAttempts = 0;
+    this.cachedAIMsgCount = 0;
+    this.cachedLastAIMsgId = '';
 
-    // Immediately fetch initial state via HTTP so user never sees a delay
+    // Immediately fetch initial state via HTTP
     this.syncRoomStateHTTP(true);
 
     // Establish WebSocket connection
     this.establishConnection();
 
-    // Start background HTTP sync as a rock-solid backup
+    // Start background HTTP sync as backup
     this.startHttpPolling();
   }
 
@@ -97,6 +107,8 @@ class ChatService {
 
         if (joinRes.ok) {
           const data = await joinRes.json();
+          this.cachedAIMsgCount = data.aiMessages?.length || 0;
+          this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
           this.initListeners.forEach((fn) => fn(data));
           this.updateStatus('connected');
           return;
@@ -107,6 +119,8 @@ class ChatService {
       if (res.ok) {
         const data = await res.json();
         if (isInitial) {
+          this.cachedAIMsgCount = data.aiMessages?.length || 0;
+          this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
           this.initListeners.forEach((fn) => fn(data));
         } else {
           this.presenceListeners.forEach((fn) => fn(data.members));
@@ -115,8 +129,14 @@ class ChatService {
               this.messageListeners.forEach((fn) => fn(msg));
             });
           }
+          // Only emit AI history if new messages actually arrived (avoids resetting scroll position!)
           if (data.aiMessages && Array.isArray(data.aiMessages)) {
-            this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
+            const lastId = data.aiMessages[data.aiMessages.length - 1]?.id || '';
+            if (data.aiMessages.length !== this.cachedAIMsgCount || lastId !== this.cachedLastAIMsgId) {
+              this.cachedAIMsgCount = data.aiMessages.length;
+              this.cachedLastAIMsgId = lastId;
+              this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
+            }
           }
           if (data.pamphlets && Array.isArray(data.pamphlets)) {
             data.pamphlets.forEach((p: PamphletFile) => {
@@ -175,6 +195,8 @@ class ChatService {
 
           if (data.type === 'room-init') {
             if (data.roomId === this.currentRoomId) {
+              this.cachedAIMsgCount = data.aiMessages?.length || 0;
+              this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
               this.initListeners.forEach((fn) =>
                 fn({
                   room: data.room,
@@ -182,6 +204,7 @@ class ChatService {
                   members: data.members,
                   aiMessages: data.aiMessages,
                   pamphlets: data.pamphlets,
+                  aiThinking: data.aiThinking,
                 })
               );
             }
@@ -197,6 +220,8 @@ class ChatService {
 
           if (data.type === 'ai-message') {
             if (data.roomId === this.currentRoomId) {
+              this.cachedAIMsgCount++;
+              this.cachedLastAIMsgId = data.message.id;
               this.aiMessageListeners.forEach((fn) => fn(data.message));
             }
             return;
@@ -204,7 +229,23 @@ class ChatService {
 
           if (data.type === 'ai-history') {
             if (data.roomId === this.currentRoomId) {
+              this.cachedAIMsgCount = data.messages.length;
+              this.cachedLastAIMsgId = data.messages[data.messages.length - 1]?.id || '';
               this.aiHistoryListeners.forEach((fn) => fn(data.messages));
+            }
+            return;
+          }
+
+          if (data.type === 'ai-thinking') {
+            if (data.roomId === this.currentRoomId) {
+              this.aiThinkingListeners.forEach((fn) =>
+                fn({
+                  isThinking: data.isThinking,
+                  question: data.question,
+                  userName: data.userName,
+                  mode: data.mode,
+                })
+              );
             }
             return;
           }
@@ -298,7 +339,7 @@ class ChatService {
     }
   }
 
-  public sendMessage(content: string): boolean {
+  public sendMessage(content: string, mode: AIMode = 'simple'): boolean {
     const raw = content.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
@@ -316,6 +357,7 @@ class ChatService {
         type: 'send-message',
         roomId: this.currentRoomId,
         message: msgPayload,
+        mode,
       });
     }
 
@@ -323,9 +365,9 @@ class ChatService {
       fetch(`/api/rooms/${this.currentRoomId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(msgPayload),
+        body: JSON.stringify({ ...msgPayload, mode }),
       })
-        .then((res) => res.ok ? res.json() : null)
+        .then((res) => (res.ok ? res.json() : null))
         .then((savedMsg: ChatMessage | null) => {
           if (savedMsg) {
             this.messageListeners.forEach((fn) => fn(savedMsg));
@@ -339,32 +381,29 @@ class ChatService {
     return true;
   }
 
-  public async askAI(question: string): Promise<boolean> {
+  /**
+   * Secure AI Endpoint: POST /api/ai/chat
+   * Supports both simple and complex (deep reasoning) modes
+   */
+  public async askAI(question: string, mode: AIMode = 'simple'): Promise<boolean> {
     const raw = question.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
     const roomId = this.currentRoomId;
     const user = this.currentUser;
 
-    // Send via WebSocket if open
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendWS({
-        type: 'ai-ask',
-        roomId,
-        question: raw,
-        user,
-      });
-      return true;
-    }
-
-    // Otherwise use HTTP endpoint
     try {
-      const res = await fetch(`/api/rooms/${roomId}/ai/ask`, {
+      const res = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          question: raw,
-          user,
+          roomId,
+          message: raw,
+          mode,
+          userId: user.id,
+          userName: user.name,
         }),
       });
 
@@ -373,10 +412,16 @@ class ChatService {
         if (data.userMsg) this.aiMessageListeners.forEach((fn) => fn(data.userMsg));
         if (data.aiMsg) this.aiMessageListeners.forEach((fn) => fn(data.aiMsg));
         return true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const errMsg = errData.error || 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.';
+        this.errorListeners.forEach((fn) => fn(errMsg));
+        return false;
       }
-      return false;
-    } catch (err) {
-      console.error('Failed to ask AI via HTTP:', err);
+    } catch {
+      this.errorListeners.forEach((fn) =>
+        fn('فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.')
+      );
       return false;
     }
   }
@@ -469,6 +514,11 @@ class ChatService {
   public onAIHistory(listener: AIHistoryHandler) {
     this.aiHistoryListeners.add(listener);
     return () => this.aiHistoryListeners.delete(listener);
+  }
+
+  public onAIThinking(listener: AIThinkingHandler) {
+    this.aiThinkingListeners.add(listener);
+    return () => this.aiThinkingListeners.delete(listener);
   }
 
   public onPamphletAdded(listener: PamphletHandler) {

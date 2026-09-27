@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import type { RoomData, RoomMember, ChatMessage, WSClientMessage, WSServerMessage } from './src/types';
 
@@ -13,7 +14,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 app.use(express.json());
 
-// In-Memory Database for Rooms and Messages
+// In-Memory Database for Rooms and Messages with file persistence fallback
 const rooms = new Map<string, RoomData>();
 const roomMessages = new Map<string, ChatMessage[]>();
 const roomClients = new Map<string, Set<WebSocket>>();
@@ -29,86 +30,159 @@ const avatarGradients = [
   'from-violet-500 to-fuchsia-600',
 ];
 
-// Seed initial demo rooms
+const DATA_DIR = path.resolve(__dirname, '.data');
+const ROOMS_FILE = path.resolve(DATA_DIR, 'rooms.json');
+const MESSAGES_FILE = path.resolve(DATA_DIR, 'messages.json');
+
+function ensureDataDir() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('Could not create data dir:', err);
+  }
+}
+
+function saveStateToDisk() {
+  try {
+    ensureDataDir();
+    const roomsObj = Object.fromEntries(rooms.entries());
+    fs.writeFileSync(ROOMS_FILE, JSON.stringify(roomsObj, null, 2), 'utf-8');
+
+    const messagesObj = Object.fromEntries(roomMessages.entries());
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messagesObj, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Could not save state to disk:', err);
+  }
+}
+
+function loadStateFromDisk() {
+  try {
+    if (fs.existsSync(ROOMS_FILE)) {
+      const roomsData = JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf-8'));
+      for (const [id, r] of Object.entries(roomsData)) {
+        rooms.set(id, r as RoomData);
+      }
+    }
+    if (fs.existsSync(MESSAGES_FILE)) {
+      const messagesData = JSON.parse(fs.readFileSync(MESSAGES_FILE, 'utf-8'));
+      for (const [id, msgs] of Object.entries(messagesData)) {
+        roomMessages.set(id, msgs as ChatMessage[]);
+      }
+    }
+  } catch (err) {
+    console.warn('Could not load state from disk:', err);
+  }
+}
+
+// Seed default rooms if empty
 function seedInitialData() {
-  const seedRoom1: RoomData = {
-    id: 'ABC123',
-    name: 'آمادگی امتحان حسابداری',
-    category: 'حسابداری و مدیریت',
-    createdAt: '۱۰:۰۰',
-    ownerId: 'user-seed-1',
-    ownerName: 'سارا احمدی',
-    members: [
+  loadStateFromDisk();
+
+  if (!rooms.has('ABC123')) {
+    const seedRoom1: RoomData = {
+      id: 'ABC123',
+      name: 'آمادگی امتحان حسابداری',
+      category: 'حسابداری و مدیریت',
+      createdAt: '۱۰:۰۰',
+      ownerId: 'user-seed-1',
+      ownerName: 'سارا احمدی',
+      members: [
+        {
+          id: 'user-seed-1',
+          name: 'سارا احمدی',
+          joinedAt: '۱۰:۰۰',
+          isOnline: false,
+          avatarBg: 'from-emerald-500 to-teal-600',
+          role: 'host',
+        },
+        {
+          id: 'user-seed-2',
+          name: 'رضا محمدی',
+          joinedAt: '۱۰:۰۵',
+          isOnline: false,
+          avatarBg: 'from-amber-500 to-orange-600',
+          role: 'member',
+        },
+      ],
+    };
+    rooms.set(seedRoom1.id, seedRoom1);
+
+    roomMessages.set(seedRoom1.id, [
       {
-        id: 'user-seed-1',
-        name: 'سارا احمدی',
-        joinedAt: '۱۰:۰۰',
-        isOnline: false,
-        avatarBg: 'from-emerald-500 to-teal-600',
-        role: 'host',
+        id: 'msg-seed-1',
+        roomId: 'ABC123',
+        senderId: 'user-seed-1',
+        senderName: 'سارا احمدی',
+        senderAvatarBg: 'from-emerald-500 to-teal-600',
+        content: 'سلام هم‌اتاقی‌ها! مطالعه فصل اول حسابداری مالی رو شروع کنیم.',
+        timestamp: '۱۰:۰۲',
+        createdAt: new Date().toISOString(),
+        isSelf: false,
       },
       {
-        id: 'user-seed-2',
-        name: 'رضا محمدی',
-        joinedAt: '۱۰:۰۵',
-        isOnline: false,
-        avatarBg: 'from-amber-500 to-orange-600',
-        role: 'member',
+        id: 'msg-seed-2',
+        roomId: 'ABC123',
+        senderId: 'user-seed-2',
+        senderName: 'رضا محمدی',
+        senderAvatarBg: 'from-amber-500 to-orange-600',
+        content: 'سلام، عالیه. من جزوه خلاصه فرمول‌ها رو هم آماده دارم.',
+        timestamp: '۱۰:۰۶',
+        createdAt: new Date().toISOString(),
+        isSelf: false,
       },
-    ],
-  };
+    ]);
+  }
 
-  const seedRoom2: RoomData = {
-    id: 'MATH101',
-    name: 'آمادگی کنکور - ریاضی تجربی',
-    category: 'ریاضیات',
-    createdAt: '۰۹:۳۰',
-    ownerId: 'user-seed-3',
-    ownerName: 'علی رضایی',
-    members: [
-      {
-        id: 'user-seed-3',
-        name: 'علی رضایی',
-        joinedAt: '۰۹:۳۰',
-        isOnline: false,
-        avatarBg: 'from-indigo-500 to-purple-600',
-        role: 'host',
-      },
-    ],
-  };
+  if (!rooms.has('MATH101')) {
+    const seedRoom2: RoomData = {
+      id: 'MATH101',
+      name: 'آمادگی کنکور - ریاضی تجربی',
+      category: 'ریاضیات',
+      createdAt: '۰۹:۳۰',
+      ownerId: 'user-seed-3',
+      ownerName: 'علی رضایی',
+      members: [
+        {
+          id: 'user-seed-3',
+          name: 'علی رضایی',
+          joinedAt: '۰۹:۳۰',
+          isOnline: false,
+          avatarBg: 'from-indigo-500 to-purple-600',
+          role: 'host',
+        },
+      ],
+    };
+    rooms.set(seedRoom2.id, seedRoom2);
+    if (!roomMessages.has(seedRoom2.id)) {
+      roomMessages.set(seedRoom2.id, []);
+    }
+  }
 
-  rooms.set(seedRoom1.id, seedRoom1);
-  rooms.set(seedRoom2.id, seedRoom2);
-
-  roomMessages.set(seedRoom1.id, [
-    {
-      id: 'msg-seed-1',
-      roomId: 'ABC123',
-      senderId: 'user-seed-1',
-      senderName: 'سارا احمدی',
-      senderAvatarBg: 'from-emerald-500 to-teal-600',
-      content: 'سلام هم‌اتاقی‌ها! مطالعه فصل اول حسابداری مالی رو شروع کنیم.',
-      timestamp: '۱۰:۰۲',
-      createdAt: new Date().toISOString(),
-      isSelf: false,
-    },
-    {
-      id: 'msg-seed-2',
-      roomId: 'ABC123',
-      senderId: 'user-seed-2',
-      senderName: 'رضا محمدی',
-      senderAvatarBg: 'from-amber-500 to-orange-600',
-      content: 'سلام، عالیه. من جزوه خلاصه فرمول‌ها رو هم آماده دارم.',
-      timestamp: '۱۰:۰۶',
-      createdAt: new Date().toISOString(),
-      isSelf: false,
-    },
-  ]);
-
-  roomMessages.set(seedRoom2.id, []);
+  saveStateToDisk();
 }
 
 seedInitialData();
+
+function normalizeRoomId(rawId: string): string {
+  if (!rawId) return '';
+  return rawId.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+}
+
+function findRoomCaseInsensitive(rawId: string): RoomData | undefined {
+  const norm = normalizeRoomId(rawId);
+  if (!norm) return undefined;
+  if (rooms.has(norm)) return rooms.get(norm);
+
+  // Search case insensitive or by substring
+  for (const [key, r] of rooms.entries()) {
+    if (key.toUpperCase() === norm.toUpperCase()) {
+      return r;
+    }
+  }
+  return undefined;
+}
 
 function generateUniqueRoomId(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -124,7 +198,7 @@ function generateUniqueRoomId(): string {
 
 // REST API Endpoints
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({ status: 'ok', time: new Date().toISOString(), roomsCount: rooms.size });
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -141,8 +215,7 @@ app.get('/api/rooms', (req, res) => {
 });
 
 app.get('/api/rooms/:roomId', (req, res) => {
-  const roomId = req.params.roomId.trim().toUpperCase();
-  const room = rooms.get(roomId);
+  const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
     return res.status(404).json({ error: 'اتاقی با این کد پیدا نشد' });
   }
@@ -150,12 +223,16 @@ app.get('/api/rooms/:roomId', (req, res) => {
 });
 
 app.post('/api/rooms', (req, res) => {
-  const { name, category = 'عمومی', ownerName, ownerId } = req.body;
+  const { name, category = 'عمومی', ownerName, ownerId, customId } = req.body;
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'نام اتاق الزامی است' });
   }
 
-  const roomId = generateUniqueRoomId();
+  let roomId = customId ? normalizeRoomId(customId) : generateUniqueRoomId();
+  if (!roomId || rooms.has(roomId)) {
+    roomId = generateUniqueRoomId();
+  }
+
   const nowStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
   const hostMember: RoomMember = {
@@ -178,17 +255,47 @@ app.post('/api/rooms', (req, res) => {
   };
 
   rooms.set(roomId, newRoom);
-  roomMessages.set(roomId, []);
+  if (!roomMessages.has(roomId)) {
+    roomMessages.set(roomId, []);
+  }
 
+  saveStateToDisk();
   res.status(201).json(newRoom);
 });
 
+// Auto-sync client-persisted room if missing on server
+app.post('/api/rooms/sync', (req, res) => {
+  const { room } = req.body;
+  if (!room || !room.id || !room.name) {
+    return res.status(400).json({ error: 'اطلاعات ناقص' });
+  }
+
+  const normId = normalizeRoomId(room.id);
+  let existing = findRoomCaseInsensitive(normId);
+
+  if (!existing) {
+    const newRoomData: RoomData = {
+      ...room,
+      id: normId,
+      members: room.members || [],
+    };
+    rooms.set(normId, newRoomData);
+    if (!roomMessages.has(normId)) {
+      roomMessages.set(normId, []);
+    }
+    saveStateToDisk();
+    return res.json(newRoomData);
+  }
+
+  res.json(existing);
+});
+
 app.get('/api/rooms/:roomId/messages', (req, res) => {
-  const roomId = req.params.roomId.trim().toUpperCase();
-  if (!rooms.has(roomId)) {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
     return res.status(404).json({ error: 'اتاقی با این کد پیدا نشد' });
   }
-  const messages = roomMessages.get(roomId) || [];
+  const messages = roomMessages.get(room.id) || [];
   res.json(messages);
 });
 
@@ -197,7 +304,8 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 function broadcastToRoom(roomId: string, message: WSServerMessage, excludeWs?: WebSocket) {
-  const clients = roomClients.get(roomId);
+  const normId = normalizeRoomId(roomId);
+  const clients = roomClients.get(normId);
   if (!clients) return;
 
   const payload = JSON.stringify(message);
@@ -219,13 +327,13 @@ wss.on('connection', (ws: WebSocket) => {
       }
 
       if (msg.type === 'join-room') {
-        const roomId = msg.roomId?.trim().toUpperCase();
-        if (!roomId || !rooms.has(roomId)) {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room) {
           ws.send(JSON.stringify({ type: 'error', message: 'اتاقی با این کد پیدا نشد' }));
           return;
         }
 
-        const room = rooms.get(roomId)!;
+        const roomId = room.id;
         const user = msg.user;
         if (!user || !user.id || !user.name) {
           ws.send(JSON.stringify({ type: 'error', message: 'اطلاعات کاربر ناقص است' }));
@@ -258,6 +366,7 @@ wss.on('connection', (ws: WebSocket) => {
           room.members.push(existingMember);
         }
 
+        saveStateToDisk();
         const currentMessages = roomMessages.get(roomId) || [];
 
         // Send room-init to the newly connected client
@@ -281,9 +390,10 @@ wss.on('connection', (ws: WebSocket) => {
       }
 
       if (msg.type === 'send-message') {
-        const roomId = msg.roomId?.trim().toUpperCase();
-        if (!roomId || !rooms.has(roomId)) return;
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room) return;
 
+        const roomId = room.id;
         const rawContent = msg.message?.content?.trim();
         if (!rawContent) return; // Prevent empty messages
 
@@ -299,13 +409,14 @@ wss.on('connection', (ws: WebSocket) => {
           content: rawContent,
           timestamp: timeFormatted,
           createdAt: now.toISOString(),
-          isSelf: false, // will be evaluated client-side based on current user ID
+          isSelf: false,
         };
 
         if (!roomMessages.has(roomId)) {
           roomMessages.set(roomId, []);
         }
         roomMessages.get(roomId)!.push(newChatMessage);
+        saveStateToDisk();
 
         // Broadcast new message strictly to this room
         broadcastToRoom(roomId, {
@@ -350,7 +461,6 @@ function handleClientLeave(ws: WebSocket) {
 
   const room = rooms.get(roomId);
   if (room && userId) {
-    // Check if the same user has any other open sockets in this room
     let userHasOtherSockets = false;
     if (clients) {
       for (const client of clients) {
@@ -368,6 +478,7 @@ function handleClientLeave(ws: WebSocket) {
         member.isOnline = false;
       }
 
+      saveStateToDisk();
       broadcastToRoom(roomId, {
         type: 'presence-update',
         roomId,
@@ -377,7 +488,7 @@ function handleClientLeave(ws: WebSocket) {
   }
 }
 
-// Vite middleware in dev, static in prod
+// Vite middleware in dev, static in prod + SPA HTML fallback for all routes
 async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -386,6 +497,24 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
+
+    // Fallback handler for client-side routing in Vite dev server
+    app.use('*', async (req, res, next) => {
+      const url = req.originalUrl;
+      // Do not catch API or WS routes
+      if (url.startsWith('/api') || url.startsWith('/ws')) {
+        return next();
+      }
+
+      try {
+        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (req, res) => {

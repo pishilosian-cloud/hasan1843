@@ -6,7 +6,7 @@ import { Badge } from '../ui/Badge';
 import { Copy, LogOut, Users, Check, Crown, Share2 } from 'lucide-react';
 
 export const RoomSidebar: React.FC = () => {
-  const { activeRoom, copyRoomLink, leaveRoom, members, currentUser } = useStudyRoom();
+  const { activeRoom, copyRoomLink, leaveRoom, members, currentUser, showToast } = useStudyRoom();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -26,9 +26,19 @@ export const RoomSidebar: React.FC = () => {
           <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-100/70 dark:bg-indigo-950 px-2 py-0.5 rounded-md">
             {activeRoom?.category || 'اتاق مطالعه'}
           </span>
-          <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-800 px-2 py-0.5 rounded-md border border-indigo-200/60 dark:border-indigo-800">
-            کد: {activeRoom?.id}
-          </span>
+          <button
+            onClick={() => {
+              if (activeRoom) {
+                navigator.clipboard?.writeText(activeRoom.id);
+                showToast(`کد ${activeRoom.id} کپی شد`);
+              }
+            }}
+            className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-800 px-2.5 py-1 rounded-md border border-indigo-200/60 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-slate-700 transition-colors cursor-pointer flex items-center gap-1"
+            title="کلیک برای کپی کد اتاق"
+          >
+            <span>کد: {activeRoom?.id}</span>
+            <Copy className="w-3 h-3 opacity-70" />
+          </button>
         </div>
 
         <h2 className="text-base font-black text-slate-900 dark:text-slate-100 mb-1">

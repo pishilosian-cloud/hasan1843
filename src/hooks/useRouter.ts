@@ -1,5 +1,38 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 
+function extractRoomIdFromLocation(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+
+  const path = window.location.pathname;
+  if (path.startsWith('/room/')) {
+    const raw = path.split('/room/')[1]?.split('/')[0]?.split('?')[0]?.split('#')[0]?.trim();
+    if (raw) return decodeURIComponent(raw).toUpperCase();
+  }
+
+  // Also check query params like ?room=ABC123 or ?roomId=ABC123
+  const searchParams = new URLSearchParams(window.location.search);
+  const queryRoom = searchParams.get('room') || searchParams.get('roomId') || searchParams.get('code');
+  if (queryRoom && queryRoom.trim()) {
+    return queryRoom.trim().toUpperCase();
+  }
+
+  // Also check hash like #/room/ABC123 or #ABC123
+  const hash = window.location.hash;
+  if (hash) {
+    if (hash.startsWith('#/room/')) {
+      const raw = hash.split('#/room/')[1]?.split('/')[0]?.split('?')[0]?.trim();
+      if (raw) return decodeURIComponent(raw).toUpperCase();
+    } else if (hash.startsWith('#') && hash.length > 1 && !hash.includes('/')) {
+      const raw = hash.substring(1).trim();
+      if (raw && !['features', 'active-rooms', 'about'].includes(raw)) {
+        return raw.toUpperCase();
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export function useRouter() {
   const [currentPath, setCurrentPath] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -8,30 +41,36 @@ export function useRouter() {
     return '/';
   });
 
+  const [extractedId, setExtractedId] = useState<string | undefined>(() => extractRoomIdFromLocation());
+
   useEffect(() => {
-    const handlePopState = () => {
+    const handleLocationChange = () => {
       setCurrentPath(window.location.pathname);
+      setExtractedId(extractRoomIdFromLocation());
     };
 
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('hashchange', handleLocationChange);
+
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('hashchange', handleLocationChange);
+    };
   }, []);
 
   const navigate = useCallback((path: string) => {
-    if (typeof window !== 'undefined' && window.location.pathname !== path) {
-      window.history.pushState({}, '', path);
-      setCurrentPath(path);
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname !== path) {
+        window.history.pushState({}, '', path);
+        setCurrentPath(path);
+        setExtractedId(extractRoomIdFromLocation());
+      }
     }
   }, []);
 
   const roomId = useMemo(() => {
-    if (currentPath.startsWith('/room/')) {
-      const parts = currentPath.split('/room/');
-      const raw = parts[1]?.split('/')[0]?.trim();
-      return raw ? decodeURIComponent(raw) : undefined;
-    }
-    return undefined;
-  }, [currentPath]);
+    return extractedId;
+  }, [extractedId]);
 
   return {
     currentPath,

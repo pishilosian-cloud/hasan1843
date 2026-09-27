@@ -535,11 +535,41 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     );
   };
 
+  const fallbackCopyText = (text: string) => {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      document.execCommand('copy');
+      textArea.remove();
+      showToast('لینک اتاق کپی شد');
+    } catch {
+      showToast(`کد اتاق: ${activeRoom?.id}`, 'info');
+    }
+  };
+
   const copyRoomLink = () => {
     if (!activeRoom) return;
-    const link = `${window.location.origin}/room/${activeRoom.id}`;
-    navigator.clipboard.writeText(link);
-    showToast('لینک اتاق کپی شد');
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const link = `${origin}/room/${activeRoom.id}`;
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(link)
+        .then(() => {
+          showToast('لینک اتاق کپی شد');
+        })
+        .catch(() => {
+          fallbackCopyText(link);
+        });
+    } else {
+      fallbackCopyText(link);
+    }
   };
 
   return (

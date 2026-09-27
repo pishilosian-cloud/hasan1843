@@ -2,9 +2,9 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
 import { RoomHeader } from './RoomHeader';
 import { RoomSidebar } from './RoomSidebar';
+import { AIPanel } from './AIPanel';
 import { ChatMessageItem } from './ChatMessageItem';
 import { ChatInput } from './ChatInput';
-import { AIPanel } from './AIPanel';
 import { Drawer } from '../ui/Drawer';
 import { MessageSquare, ArrowDown, RefreshCw, Loader2 } from 'lucide-react';
 
@@ -56,7 +56,6 @@ export const RoomView: React.FC = () => {
     prevMessagesCountRef.current = messages.length;
 
     if (!isNew) {
-      // initial load or refresh
       if (messages.length > 0) {
         scrollToBottom(false);
       }
@@ -64,10 +63,8 @@ export const RoomView: React.FC = () => {
     }
 
     if (isNearBottomRef.current) {
-      // User was at bottom -> auto scroll
       scrollToBottom(true);
     } else {
-      // User was reading history -> show "New message ↓" badge
       setShowScrollBottomBtn(true);
       setUnreadCount((prev) => prev + 1);
     }
@@ -89,14 +86,14 @@ export const RoomView: React.FC = () => {
         </div>
       )}
 
-      {/* Main Container - 3 Column Layout on Desktop */}
+      {/* Main Container - 3 Column Layout on Desktop (RTL: First = Right, Last = Left) */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Left / Desktop Sidebar (Room Info, Share, Members) */}
-        <div className="hidden lg:block w-72 h-full shrink-0">
-          <RoomSidebar />
+        {/* Right Column: AI Assistant Panel (In RTL, this is positioned on the right of Chat) */}
+        <div className="hidden lg:block w-80 h-full shrink-0">
+          <AIPanel />
         </div>
 
-        {/* Center / Main Area (Chat Messages & Input) */}
+        {/* Center Column: Main Chat Messages & Input */}
         <main className="flex-1 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden relative">
           {/* Scrollable Messages Stream */}
           <div
@@ -145,9 +142,9 @@ export const RoomView: React.FC = () => {
           <ChatInput />
         </main>
 
-        {/* Right / Desktop AI Assistant Panel */}
-        <div className="hidden lg:block w-80 h-full shrink-0">
-          <AIPanel />
+        {/* Left Column: Room Sidebar (Info, Link, Members) */}
+        <div className="hidden lg:block w-72 h-full shrink-0">
+          <RoomSidebar />
         </div>
       </div>
 
@@ -165,8 +162,10 @@ export const RoomView: React.FC = () => {
       <Drawer
         isOpen={isAIOpen}
         onClose={() => setIsAIOpen(false)}
-        title="دستیار هوشمند آموزشی"
+        title="🤖 دستیار هوشمند"
+        subtitle="سؤالت رو درباره جزوه یا درس بپرس."
         side="left"
+        noPadding={true}
       >
         <AIPanel />
       </Drawer>

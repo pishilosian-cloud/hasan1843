@@ -3,7 +3,7 @@ import {
   User,
   Room,
   ChatMessage,
-  AIMessageItem,
+  AIMessage,
   PamphletFile,
   VoiceState,
   ModalType,
@@ -25,8 +25,9 @@ interface StudyRoomContextType {
 
   members: User[];
   messages: ChatMessage[];
-  aiMessages: AIMessageItem[];
+  aiMessages: AIMessage[];
   pamphlets: PamphletFile[];
+  isAskingAI: boolean;
   voiceState: VoiceState;
   connectionStatus: ConnectionStatus;
   isLoadingMessages: boolean;
@@ -47,8 +48,8 @@ interface StudyRoomContextType {
   currentPath: string;
 
   sendMessage: (content: string) => boolean;
-  sendAIQuestion: (question: string) => void;
-  uploadPamphlet: (fileName: string, fileSize: string) => void;
+  sendAIQuestion: (question: string) => Promise<void>;
+  uploadPamphlet: (file: File) => Promise<void>;
 
   toggleVoiceCall: () => void;
   toggleMicrophone: () => void;
@@ -65,35 +66,6 @@ const defaultUser: User = {
   isMuted: false,
   role: 'member',
 };
-
-const initialAIHistory: AIMessageItem[] = [
-  {
-    id: 'ai-1',
-    question: 'مهم‌ترین نکات فصل اول حسابداری مالی چیست؟',
-    answer: 'فصل اول عمدتاً بر مفروضات بنیادی حسابداری تمرکز دارد:\n۱. فرض تداوم فعالیت\n۲. فرض تفکیک شخصیت\n۳. فرض دوره مالی\n۴. فرض واحد اندازه‌گیری بر حسب پول',
-    timestamp: '۱۰:۲۸',
-    sources: ['جزوه_حسابداری_فصل۱.pdf'],
-  },
-];
-
-const initialPamphlets: PamphletFile[] = [
-  {
-    id: 'p-1',
-    name: 'جزوه_جامع_حسابداری_فصل۱و۲.pdf',
-    size: '۲.۴ مگابایت',
-    type: 'PDF',
-    uploadedAt: '۱۰:۱۵',
-    pagesCount: 18,
-  },
-  {
-    id: 'p-2',
-    name: 'خلاصه_نکات_امتحانی.pdf',
-    size: '۱.۱ مگابایت',
-    type: 'PDF',
-    uploadedAt: '۱۰:۲۰',
-    pagesCount: 8,
-  },
-];
 
 const StudyRoomContext = createContext<StudyRoomContextType | undefined>(undefined);
 
@@ -122,13 +94,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
+  const [isAskingAI, setIsAskingAI] = useState<boolean>(false);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
   const [members, setMembers] = useState<User[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [aiMessages, setAiMessages] = useState<AIMessageItem[]>(initialAIHistory);
-  const [pamphlets, setPamphlets] = useState<PamphletFile[]>(initialPamphlets);
+  const [aiMessages, setAiMessages] = useState<AIMessage[]>([]);
+  const [pamphlets, setPamphlets] = useState<PamphletFile[]>([]);
 
   const [voiceState, setVoiceState] = useState<VoiceState>({
     isCallActive: false,
@@ -154,7 +127,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRoomError(null);
   };
 
-  // Sync theme with html class
   useEffect(() => {
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
@@ -187,7 +159,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  // Helper to map RoomMember array to User array
   const mapMembersToUsers = useCallback((roomMembers: RoomMember[]): User[] => {
     return roomMembers.map((m) => ({
       id: m.id,
@@ -217,17 +188,22 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       setMembers(mapMembersToUsers(data.members));
 
-      // Map messages with isSelf flag
       const enrichedMessages = data.messages.map((m) => ({
         ...m,
         isSelf: m.senderId === currentUser.id,
       }));
       setMessages(enrichedMessages);
+
+      if (data.aiMessages) {
+        setAiMessages(data.aiMessages);
+      }
+      if (data.pamphlets) {
+        setPamphlets(data.pamphlets);
+      }
     });
 
     const unsubNewMsg = chatService.onNewMessage((newMsg) => {
       setMessages((prev) => {
-        // Prevent duplicate messages
         if (prev.some((m) => m.id === newMsg.id)) {
           return prev;
         }
@@ -238,6 +214,32 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             isSelf: newMsg.senderId === currentUser.id,
           },
         ];
+      });
+    });
+
+    const unsubAIMsg = chatService.onAIMessage((newAIMsg) => {
+      if (newAIMsg.type === 'ai') {
+        setIsAskingAI(false);
+      }
+      setAiMessages((prev) => {
+        if (prev.some((m) => m.id === newAIMsg.id)) {
+          return prev;
+        }
+        return [...prev, newAIMsg];
+      });
+    });
+
+    const unsubAIHistory = chatService.onAIHistory((history) => {
+      setAiMessages(history);
+      setIsAskingAI(false);
+    });
+
+    const unsubPamphlet = chatService.onPamphletAdded((newPamphlet) => {
+      setPamphlets((prev) => {
+        if (prev.some((p) => p.id === newPamphlet.id)) {
+          return prev;
+        }
+        return [...prev, newPamphlet];
       });
     });
 
@@ -255,12 +257,16 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
 
     const unsubError = chatService.onError((errMsg) => {
+      setIsAskingAI(false);
       showToast(errMsg, 'error');
     });
 
     return () => {
       unsubInit();
       unsubNewMsg();
+      unsubAIMsg();
+      unsubAIHistory();
+      unsubPamphlet();
       unsubPresence();
       unsubStatus();
       unsubError();
@@ -276,7 +282,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('join-room');
     } else if (urlRoomId) {
-      // If already active in this room, do not re-fetch
       if (activeRoom && activeRoom.id.toUpperCase() === urlRoomId.toUpperCase()) {
         return;
       }
@@ -301,7 +306,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           return;
         }
 
-        // Room exists! Immediately set activeRoom so UI renders the room
         setActiveRoom({
           id: roomData.id,
           name: roomData.name,
@@ -315,14 +319,12 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setMembers(mapMembersToUsers(roomData.members));
         }
 
-        // If user has no name yet, prompt for name
         if (!currentUser.name) {
           setPendingRoomId(roomData.id);
           setModalType('name-entry');
         } else {
           setModalType('none');
           setIsLoadingMessages(true);
-          // Connect to real-time room
           chatService.connectToRoom(roomData.id, {
             id: currentUser.id,
             name: currentUser.name,
@@ -360,7 +362,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setCurrentUser(updatedUser);
     localStorage.setItem('studyroom_user_name', trimmed);
 
-    // If there was a pending room creation, fulfill it now!
     if (pendingRoomCreation) {
       const { roomName, category } = pendingRoomCreation;
       setPendingRoomCreation(null);
@@ -426,7 +427,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         userToUse.id
       );
 
-      // Immediately set activeRoom so UI renders room instantly
       const createdRoomModel: Room = {
         id: newRoom.id,
         name: newRoom.name,
@@ -512,6 +512,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveRoom(null);
     setMessages([]);
     setMembers([]);
+    setAiMessages([]);
+    setPamphlets([]);
+    setIsAskingAI(false);
     setVoiceState({
       isCallActive: false,
       isMuted: false,
@@ -528,46 +531,60 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return chatService.sendMessage(raw);
   };
 
-  const sendAIQuestion = (question: string) => {
-    if (!question.trim()) return;
+  // Shared Room AI Question
+  const sendAIQuestion = async (question: string) => {
+    const cleanQ = question.trim();
+    if (!cleanQ || isAskingAI) return;
 
-    const newAI: AIMessageItem = {
-      id: `ai-${Date.now()}`,
-      question,
-      answer: 'در حال تحلیل منابع و پاسخگویی توسط دستیار هوشمند...',
-      timestamp: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-      isGenerating: true,
-    };
-
-    setAiMessages((prev) => [newAI, ...prev]);
-
-    setTimeout(() => {
-      setAiMessages((prev) =>
-        prev.map((item) =>
-          item.id === newAI.id
-            ? {
-                ...item,
-                isGenerating: false,
-                answer: `پاسخ پیشنهادی دستیار AI درباره «${question}»:\n\nبر اساس جزوات موجود در اتاق، این مبحث شامل ۳ نکته کلیدی است:\n۱. تعریف دقیق مفهوم و ارتباط آن با مباحث پیشین.\n۲. فرمول اصلی و استثناهای کاربرد آن در مسائل.\n۳. نمونه سوال متداول امتحانی و روش حل گام‌به‌گام.`,
-              }
-            : item
-        )
-      );
-    }, 1200);
+    setIsAskingAI(true);
+    const success = await chatService.askAI(cleanQ);
+    if (!success) {
+      setIsAskingAI(false);
+      showToast('خطا در ارسال سوال به دستیار هوشمند', 'error');
+    }
   };
 
-  const uploadPamphlet = (fileName: string, fileSize: string) => {
-    const newPamphlet: PamphletFile = {
-      id: `p-${Date.now()}`,
-      name: fileName,
-      size: fileSize,
-      type: 'PDF',
-      uploadedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-      pagesCount: Math.floor(Math.random() * 15) + 5,
+  // Upload room pamphlet (PDF, TXT, DOCX)
+  const uploadPamphlet = async (file: File) => {
+    if (!activeRoom) {
+      showToast('ابتدا وارد اتاق شوید', 'error');
+      return;
+    }
+
+    const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
+    const formattedSize =
+      file.size < 1024 * 1024
+        ? `${(file.size / 1024).toFixed(0)} کیلوبایت`
+        : `${(file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+    // Read content based on type
+    const reader = new FileReader();
+
+    reader.onload = async () => {
+      const content = reader.result as string;
+      const uploaded = await chatService.uploadPamphlet({
+        name: file.name,
+        size: formattedSize,
+        type: ext,
+        content,
+      });
+
+      if (uploaded) {
+        showToast(`جزوه «${file.name}» با موفقیت برای اتاق آپلود شد.`);
+      } else {
+        showToast('خطا در آپلود جزوه', 'error');
+      }
     };
 
-    setPamphlets((prev) => [newPamphlet, ...prev]);
-    showToast(`جزوه «${fileName}» با موفقیت اضافه شد.`);
+    reader.onerror = () => {
+      showToast('خطا در خواندن فایل انتخاب شده', 'error');
+    };
+
+    if (file.type.includes('text') || file.name.endsWith('.txt')) {
+      reader.readAsText(file, 'utf-8');
+    } else {
+      reader.readAsDataURL(file);
+    }
   };
 
   const toggleVoiceCall = () => {
@@ -660,6 +677,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         messages,
         aiMessages,
         pamphlets,
+        isAskingAI,
         voiceState,
         connectionStatus,
         isLoadingMessages,

@@ -57,21 +57,31 @@ export interface ChatMessage {
   };
 }
 
-export interface AIMessageItem {
+export interface AIMessage {
   id: string;
-  question: string;
-  answer: string;
-  timestamp: string;
+  roomId: string;
+  type: 'user' | 'ai';
+  sender: string;
+  senderId?: string;
+  senderAvatarBg?: string;
+  message: string;
+  createdAt: string;
   sources?: string[];
   isGenerating?: boolean;
 }
 
+// Keep AIMessageItem as an alias or backward-compat representation
+export type AIMessageItem = AIMessage;
+
 export interface PamphletFile {
   id: string;
+  roomId: string;
   name: string;
   size: string;
   type: string;
-  uploadedAt: string;
+  uploadedBy: string;
+  createdAt: string;
+  content?: string; // text excerpt or base64 data for AI comprehension
   pagesCount?: number;
 }
 
@@ -92,11 +102,23 @@ export type WSClientMessage =
   | { type: 'join-room'; roomId: string; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'leave-room'; roomId: string; userId: string }
   | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string } }
+  | { type: 'ai-ask'; roomId: string; question: string; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'ping' };
 
 export type WSServerMessage =
-  | { type: 'room-init'; roomId: string; room: RoomData; messages: ChatMessage[]; members: RoomMember[] }
+  | {
+      type: 'room-init';
+      roomId: string;
+      room: RoomData;
+      messages: ChatMessage[];
+      members: RoomMember[];
+      aiMessages: AIMessage[];
+      pamphlets: PamphletFile[];
+    }
   | { type: 'new-message'; roomId: string; message: ChatMessage }
+  | { type: 'ai-message'; roomId: string; message: AIMessage }
+  | { type: 'ai-history'; roomId: string; messages: AIMessage[] }
+  | { type: 'pamphlet-added'; roomId: string; pamphlet: PamphletFile }
   | { type: 'presence-update'; roomId: string; members: RoomMember[] }
   | { type: 'user-joined'; roomId: string; member: RoomMember }
   | { type: 'user-left'; roomId: string; userId: string }

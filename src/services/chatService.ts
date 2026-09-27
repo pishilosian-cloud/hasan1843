@@ -3,13 +3,24 @@ import {
   RoomData,
   RoomMember,
   ConnectionStatus,
+  AIMessage,
+  PamphletFile,
   WSClientMessage,
   WSServerMessage,
 } from '../types';
 
 type MessageHandler = (message: ChatMessage) => void;
 type PresenceHandler = (members: RoomMember[]) => void;
-type InitHandler = (data: { room: RoomData; messages: ChatMessage[]; members: RoomMember[] }) => void;
+type InitHandler = (data: {
+  room: RoomData;
+  messages: ChatMessage[];
+  members: RoomMember[];
+  aiMessages?: AIMessage[];
+  pamphlets?: PamphletFile[];
+}) => void;
+type AIMessageHandler = (message: AIMessage) => void;
+type AIHistoryHandler = (messages: AIMessage[]) => void;
+type PamphletHandler = (pamphlet: PamphletFile) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type ErrorHandler = (error: string) => void;
 
@@ -29,6 +40,9 @@ class ChatService {
   private messageListeners = new Set<MessageHandler>();
   private presenceListeners = new Set<PresenceHandler>();
   private initListeners = new Set<InitHandler>();
+  private aiMessageListeners = new Set<AIMessageHandler>();
+  private aiHistoryListeners = new Set<AIHistoryHandler>();
+  private pamphletListeners = new Set<PamphletHandler>();
   private statusListeners = new Set<StatusHandler>();
   private errorListeners = new Set<ErrorHandler>();
 
@@ -46,7 +60,7 @@ class ChatService {
   public connectToRoom(roomId: string, user: { id: string; name: string; avatarBg?: string }) {
     const cleanRoomId = roomId.trim().toUpperCase();
     if (this.currentRoomId === cleanRoomId && this.currentUser?.id === user.id && (this.isWsHealthy || this.status === 'connected')) {
-      return; // Already connected to this room
+      return;
     }
 
     this.intentionalDisconnect = false;
@@ -75,7 +89,6 @@ class ChatService {
 
     try {
       if (isInitial) {
-        // Register presence via HTTP join
         const joinRes = await fetch(`/api/rooms/${this.currentRoomId}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -90,18 +103,24 @@ class ChatService {
         }
       }
 
-      // Sync state poll
       const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
       if (res.ok) {
         const data = await res.json();
         if (isInitial) {
           this.initListeners.forEach((fn) => fn(data));
         } else {
-          // Deliver latest messages and presence
           this.presenceListeners.forEach((fn) => fn(data.members));
           if (data.messages && Array.isArray(data.messages)) {
             data.messages.forEach((msg: ChatMessage) => {
               this.messageListeners.forEach((fn) => fn(msg));
+            });
+          }
+          if (data.aiMessages && Array.isArray(data.aiMessages)) {
+            this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
+          }
+          if (data.pamphlets && Array.isArray(data.pamphlets)) {
+            data.pamphlets.forEach((p: PamphletFile) => {
+              this.pamphletListeners.forEach((fn) => fn(p));
             });
           }
         }
@@ -136,7 +155,6 @@ class ChatService {
         this.updateStatus('connected');
         this.startHeartbeat();
 
-        // Send join-room event immediately
         if (this.currentRoomId && this.currentUser) {
           const joinMsg: WSClientMessage = {
             type: 'join-room',
@@ -162,6 +180,8 @@ class ChatService {
                   room: data.room,
                   messages: data.messages,
                   members: data.members,
+                  aiMessages: data.aiMessages,
+                  pamphlets: data.pamphlets,
                 })
               );
             }
@@ -171,6 +191,27 @@ class ChatService {
           if (data.type === 'new-message') {
             if (data.roomId === this.currentRoomId) {
               this.messageListeners.forEach((fn) => fn(data.message));
+            }
+            return;
+          }
+
+          if (data.type === 'ai-message') {
+            if (data.roomId === this.currentRoomId) {
+              this.aiMessageListeners.forEach((fn) => fn(data.message));
+            }
+            return;
+          }
+
+          if (data.type === 'ai-history') {
+            if (data.roomId === this.currentRoomId) {
+              this.aiHistoryListeners.forEach((fn) => fn(data.messages));
+            }
+            return;
+          }
+
+          if (data.type === 'pamphlet-added') {
+            if (data.roomId === this.currentRoomId) {
+              this.pamphletListeners.forEach((fn) => fn(data.pamphlet));
             }
             return;
           }
@@ -195,7 +236,6 @@ class ChatService {
         this.isWsHealthy = false;
         this.stopHeartbeat();
         if (!this.intentionalDisconnect && this.currentRoomId) {
-          // Don't mark disconnected if HTTP sync is keeping us alive
           this.scheduleReconnect();
         }
       };
@@ -244,7 +284,6 @@ class ChatService {
 
   private startHttpPolling() {
     this.stopHttpPolling();
-    // Background sync every 3 seconds to ensure real-time continuity across any network
     this.pollInterval = window.setInterval(() => {
       if (!this.intentionalDisconnect && this.currentRoomId) {
         this.syncRoomStateHTTP(false);
@@ -271,7 +310,6 @@ class ChatService {
       senderAvatarBg: this.currentUser.avatarBg,
     };
 
-    // Try sending over WebSocket
     let sentViaWs = false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       sentViaWs = this.sendWS({
@@ -281,19 +319,14 @@ class ChatService {
       });
     }
 
-    // If WS is not open, send via HTTP REST API
     if (!sentViaWs && this.currentRoomId) {
       fetch(`/api/rooms/${this.currentRoomId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(msgPayload),
       })
-        .then((res) => {
-          if (res.ok) {
-            return res.json();
-          }
-        })
-        .then((savedMsg: ChatMessage) => {
+        .then((res) => res.ok ? res.json() : null)
+        .then((savedMsg: ChatMessage | null) => {
           if (savedMsg) {
             this.messageListeners.forEach((fn) => fn(savedMsg));
           }
@@ -304,6 +337,77 @@ class ChatService {
     }
 
     return true;
+  }
+
+  public async askAI(question: string): Promise<boolean> {
+    const raw = question.trim();
+    if (!raw || !this.currentRoomId || !this.currentUser) return false;
+
+    const roomId = this.currentRoomId;
+    const user = this.currentUser;
+
+    // Send via WebSocket if open
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendWS({
+        type: 'ai-ask',
+        roomId,
+        question: raw,
+        user,
+      });
+      return true;
+    }
+
+    // Otherwise use HTTP endpoint
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/ai/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: raw,
+          user,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.userMsg) this.aiMessageListeners.forEach((fn) => fn(data.userMsg));
+        if (data.aiMsg) this.aiMessageListeners.forEach((fn) => fn(data.aiMsg));
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to ask AI via HTTP:', err);
+      return false;
+    }
+  }
+
+  public async uploadPamphlet(pamphletData: {
+    name: string;
+    size: string;
+    type: string;
+    content?: string;
+  }): Promise<PamphletFile | null> {
+    if (!this.currentRoomId || !this.currentUser) return null;
+
+    try {
+      const res = await fetch(`/api/rooms/${this.currentRoomId}/pamphlets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...pamphletData,
+          uploadedBy: this.currentUser.name,
+        }),
+      });
+
+      if (res.ok) {
+        const created: PamphletFile = await res.json();
+        this.pamphletListeners.forEach((fn) => fn(created));
+        return created;
+      }
+    } catch (err) {
+      console.error('Failed to upload pamphlet:', err);
+    }
+    return null;
   }
 
   private sendWS(msg: WSClientMessage): boolean {
@@ -355,6 +459,21 @@ class ChatService {
   public onNewMessage(listener: MessageHandler) {
     this.messageListeners.add(listener);
     return () => this.messageListeners.delete(listener);
+  }
+
+  public onAIMessage(listener: AIMessageHandler) {
+    this.aiMessageListeners.add(listener);
+    return () => this.aiMessageListeners.delete(listener);
+  }
+
+  public onAIHistory(listener: AIHistoryHandler) {
+    this.aiHistoryListeners.add(listener);
+    return () => this.aiHistoryListeners.delete(listener);
+  }
+
+  public onPamphletAdded(listener: PamphletHandler) {
+    this.pamphletListeners.add(listener);
+    return () => this.pamphletListeners.delete(listener);
   }
 
   public onPresenceUpdate(listener: PresenceHandler) {

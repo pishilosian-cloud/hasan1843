@@ -19,10 +19,12 @@ class ChatService {
   private currentUser: { id: string; name: string; avatarBg?: string } | null = null;
   private status: ConnectionStatus = 'disconnected';
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = 5;
   private reconnectTimer: number | null = null;
   private pingInterval: number | null = null;
+  private pollInterval: number | null = null;
   private intentionalDisconnect = false;
+  private isWsHealthy = false;
 
   private messageListeners = new Set<MessageHandler>();
   private presenceListeners = new Set<PresenceHandler>();
@@ -43,7 +45,7 @@ class ChatService {
 
   public connectToRoom(roomId: string, user: { id: string; name: string; avatarBg?: string }) {
     const cleanRoomId = roomId.trim().toUpperCase();
-    if (this.currentRoomId === cleanRoomId && this.currentUser?.id === user.id && this.ws?.readyState === WebSocket.OPEN) {
+    if (this.currentRoomId === cleanRoomId && this.currentUser?.id === user.id && (this.isWsHealthy || this.status === 'connected')) {
       return; // Already connected to this room
     }
 
@@ -52,13 +54,62 @@ class ChatService {
     this.currentUser = user;
     this.reconnectAttempts = 0;
 
+    // Immediately fetch initial state via HTTP so user never sees a delay
+    this.syncRoomStateHTTP(true);
+
+    // Establish WebSocket connection
     this.establishConnection();
+
+    // Start background HTTP sync as a rock-solid backup
+    this.startHttpPolling();
   }
 
   private getWebSocketUrl(): string {
-    if (typeof window === 'undefined') return 'ws://localhost:3000';
+    if (typeof window === 'undefined') return 'ws://localhost:3000/ws';
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}`;
+    return `${protocol}//${window.location.host}/ws`;
+  }
+
+  private async syncRoomStateHTTP(isInitial = false) {
+    if (!this.currentRoomId || !this.currentUser) return;
+
+    try {
+      if (isInitial) {
+        // Register presence via HTTP join
+        const joinRes = await fetch(`/api/rooms/${this.currentRoomId}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: this.currentUser }),
+        });
+
+        if (joinRes.ok) {
+          const data = await joinRes.json();
+          this.initListeners.forEach((fn) => fn(data));
+          this.updateStatus('connected');
+          return;
+        }
+      }
+
+      // Sync state poll
+      const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
+      if (res.ok) {
+        const data = await res.json();
+        if (isInitial) {
+          this.initListeners.forEach((fn) => fn(data));
+        } else {
+          // Deliver latest messages and presence
+          this.presenceListeners.forEach((fn) => fn(data.members));
+          if (data.messages && Array.isArray(data.messages)) {
+            data.messages.forEach((msg: ChatMessage) => {
+              this.messageListeners.forEach((fn) => fn(msg));
+            });
+          }
+        }
+        this.updateStatus('connected');
+      }
+    } catch {
+      // ignore network errors silently during polling
+    }
   }
 
   private establishConnection() {
@@ -71,13 +122,16 @@ class ChatService {
       this.ws = null;
     }
 
-    this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+    if (this.status !== 'connected') {
+      this.updateStatus('connecting');
+    }
 
     try {
       const url = this.getWebSocketUrl();
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
+        this.isWsHealthy = true;
         this.reconnectAttempts = 0;
         this.updateStatus('connected');
         this.startHeartbeat();
@@ -89,7 +143,7 @@ class ChatService {
             roomId: this.currentRoomId,
             user: this.currentUser,
           };
-          this.send(joinMsg);
+          this.sendWS(joinMsg);
         }
       };
 
@@ -138,22 +192,20 @@ class ChatService {
       };
 
       this.ws.onclose = () => {
+        this.isWsHealthy = false;
         this.stopHeartbeat();
-        if (!this.intentionalDisconnect) {
-          this.updateStatus('disconnected');
+        if (!this.intentionalDisconnect && this.currentRoomId) {
+          // Don't mark disconnected if HTTP sync is keeping us alive
           this.scheduleReconnect();
-        } else {
-          this.updateStatus('disconnected');
         }
       };
 
       this.ws.onerror = () => {
+        this.isWsHealthy = false;
         this.stopHeartbeat();
-        if (!this.intentionalDisconnect) {
-          this.updateStatus('disconnected');
-        }
       };
     } catch {
+      this.isWsHealthy = false;
       this.scheduleReconnect();
     }
   }
@@ -163,15 +215,14 @@ class ChatService {
 
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 8000);
-      this.updateStatus('reconnecting');
+      const delay = Math.min(2000 * this.reconnectAttempts, 10000);
 
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = window.setTimeout(() => {
-        this.establishConnection();
+        if (!this.intentionalDisconnect && this.currentRoomId) {
+          this.establishConnection();
+        }
       }, delay);
-    } else {
-      this.updateStatus('disconnected');
     }
   }
 
@@ -179,7 +230,7 @@ class ChatService {
     this.stopHeartbeat();
     this.pingInterval = window.setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.send({ type: 'ping' });
+        this.sendWS({ type: 'ping' });
       }
     }, 25000);
   }
@@ -191,29 +242,78 @@ class ChatService {
     }
   }
 
+  private startHttpPolling() {
+    this.stopHttpPolling();
+    // Background sync every 3 seconds to ensure real-time continuity across any network
+    this.pollInterval = window.setInterval(() => {
+      if (!this.intentionalDisconnect && this.currentRoomId) {
+        this.syncRoomStateHTTP(false);
+      }
+    }, 3000);
+  }
+
+  private stopHttpPolling() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
+
   public sendMessage(content: string): boolean {
     const raw = content.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
-    const messagePayload: WSClientMessage = {
-      type: 'send-message',
-      roomId: this.currentRoomId,
-      message: {
-        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        content: raw,
-        senderId: this.currentUser.id,
-        senderName: this.currentUser.name,
-        senderAvatarBg: this.currentUser.avatarBg,
-      },
+    const msgPayload = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      content: raw,
+      senderId: this.currentUser.id,
+      senderName: this.currentUser.name,
+      senderAvatarBg: this.currentUser.avatarBg,
     };
 
-    return this.send(messagePayload);
+    // Try sending over WebSocket
+    let sentViaWs = false;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      sentViaWs = this.sendWS({
+        type: 'send-message',
+        roomId: this.currentRoomId,
+        message: msgPayload,
+      });
+    }
+
+    // If WS is not open, send via HTTP REST API
+    if (!sentViaWs && this.currentRoomId) {
+      fetch(`/api/rooms/${this.currentRoomId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(msgPayload),
+      })
+        .then((res) => {
+          if (res.ok) {
+            return res.json();
+          }
+        })
+        .then((savedMsg: ChatMessage) => {
+          if (savedMsg) {
+            this.messageListeners.forEach((fn) => fn(savedMsg));
+          }
+        })
+        .catch((err) => {
+          console.warn('Failed to send message via HTTP REST:', err);
+        });
+    }
+
+    return true;
   }
 
-  private send(msg: WSClientMessage): boolean {
+  private sendWS(msg: WSClientMessage): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
-      return true;
+      try {
+        this.ws.send(JSON.stringify(msg));
+        return true;
+      } catch {
+        return false;
+      }
     }
     return false;
   }
@@ -225,9 +325,10 @@ class ChatService {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.stopHttpPolling();
 
     if (this.ws && this.currentRoomId && this.currentUser) {
-      this.send({
+      this.sendWS({
         type: 'leave-room',
         roomId: this.currentRoomId,
         userId: this.currentUser.id,
@@ -263,7 +364,6 @@ class ChatService {
 
   public onStatusChange(listener: StatusHandler) {
     this.statusListeners.add(listener);
-    // immediately notify of current status
     listener(this.status);
     return () => this.statusListeners.delete(listener);
   }

@@ -174,7 +174,7 @@ function findRoomCaseInsensitive(rawId: string): RoomData | undefined {
   if (!norm) return undefined;
   if (rooms.has(norm)) return rooms.get(norm);
 
-  // Search case insensitive or by substring
+  // Search case insensitive
   for (const [key, r] of rooms.entries()) {
     if (key.toUpperCase() === norm.toUpperCase() || normalizeRoomId(key) === norm) {
       return r;
@@ -289,6 +289,65 @@ app.post('/api/rooms/sync', (req, res) => {
   res.json(existing);
 });
 
+// Join Room via REST API (syncing presence)
+app.post('/api/rooms/:roomId/join', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
+  }
+
+  const { user } = req.body;
+  if (!user || !user.id || !user.name) {
+    return res.status(400).json({ error: 'اطلاعات کاربر ناقص است' });
+  }
+
+  let existingMember = room.members.find((m) => m.id === user.id);
+  if (existingMember) {
+    existingMember.isOnline = true;
+    existingMember.name = user.name;
+  } else {
+    existingMember = {
+      id: user.id,
+      name: user.name,
+      joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      isOnline: true,
+      avatarBg: user.avatarBg || avatarGradients[room.members.length % avatarGradients.length],
+      role: 'member',
+    };
+    room.members.push(existingMember);
+  }
+
+  saveStateToDisk();
+
+  // Broadcast presence to WS clients
+  broadcastToRoom(room.id, {
+    type: 'presence-update',
+    roomId: room.id,
+    members: room.members,
+  });
+
+  const messages = roomMessages.get(room.id) || [];
+  res.json({
+    room,
+    messages,
+    members: room.members,
+  });
+});
+
+// Polling / State Sync endpoint
+app.get('/api/rooms/:roomId/sync-state', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
+  }
+  const messages = roomMessages.get(room.id) || [];
+  res.json({
+    room,
+    messages,
+    members: room.members,
+  });
+});
+
 app.get('/api/rooms/:roomId/messages', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
@@ -298,9 +357,53 @@ app.get('/api/rooms/:roomId/messages', (req, res) => {
   res.json(messages);
 });
 
-// Setup HTTP Server & WebSocket Server
+// REST endpoint to send chat messages
+app.post('/api/rooms/:roomId/messages', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
+  }
+
+  const { id, content, senderId, senderName, senderAvatarBg } = req.body;
+  const rawContent = content?.trim();
+  if (!rawContent || !senderId || !senderName) {
+    return res.status(400).json({ error: 'پیام نامعتبر است' });
+  }
+
+  const now = new Date();
+  const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+  const newChatMessage: ChatMessage = {
+    id: id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    roomId: room.id,
+    senderId,
+    senderName,
+    senderAvatarBg: senderAvatarBg || avatarGradients[0],
+    content: rawContent,
+    timestamp: timeFormatted,
+    createdAt: now.toISOString(),
+    isSelf: false,
+  };
+
+  if (!roomMessages.has(room.id)) {
+    roomMessages.set(room.id, []);
+  }
+  roomMessages.get(room.id)!.push(newChatMessage);
+  saveStateToDisk();
+
+  // Broadcast to all WS clients
+  broadcastToRoom(room.id, {
+    type: 'new-message',
+    roomId: room.id,
+    message: newChatMessage,
+  });
+
+  res.status(201).json(newChatMessage);
+});
+
+// Setup HTTP Server & WebSocket Server (on specific path /ws)
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, path: '/ws' });
 
 function broadcastToRoom(roomId: string, message: WSServerMessage, excludeWs?: WebSocket) {
   const normId = normalizeRoomId(roomId);
@@ -489,9 +592,7 @@ function handleClientLeave(ws: WebSocket) {
 
 // Vite middleware in dev, static in prod + SPA HTML fallback for all frontend routes
 async function startServer() {
-  const distIndex = path.resolve(__dirname, 'dist', 'index.html');
-  const hasDist = fs.existsSync(distIndex);
-  const isProd = process.env.NODE_ENV === 'production' || hasDist;
+  const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -504,8 +605,8 @@ async function startServer() {
     // Fallback handler for client-side routing in Vite dev server (e.g. /room/ABC123, /create-room, /join)
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
-      // Do not catch API routes
-      if (url.startsWith('/api')) {
+      // Do not catch API or WS routes
+      if (url.startsWith('/api') || url.startsWith('/ws')) {
         return next();
       }
 
@@ -521,11 +622,12 @@ async function startServer() {
   } else {
     // Production static files from dist
     const distPath = path.resolve(__dirname, 'dist');
+    const distIndex = path.resolve(distPath, 'index.html');
     app.use(express.static(distPath));
 
     // Fallback for all other routes to dist/index.html
     app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) {
+      if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
         return next();
       }
       res.sendFile(distIndex);

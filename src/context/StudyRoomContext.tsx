@@ -246,10 +246,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const unsubStatus = chatService.onStatusChange((status) => {
       setConnectionStatus(status);
-      if (status === 'connected' && (prevStatusRef.current === 'reconnecting' || prevStatusRef.current === 'disconnected')) {
+      if (status === 'connected' && prevStatusRef.current === 'reconnecting') {
         showToast('اتصال برقرار شد', 'success');
-      } else if (status === 'reconnecting') {
-        showToast('اتصال قطع شد، در حال تلاش برای اتصال مجدد...', 'info');
       }
       prevStatusRef.current = status;
     });

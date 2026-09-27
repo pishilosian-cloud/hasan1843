@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -19,15 +20,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 
-// Initialize Google Gemini SDK on Server Side
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+function getGeminiClient(): GoogleGenAI {
+  const apiKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.API_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    ''
+  ).trim();
+
+  return new GoogleGenAI({
+    apiKey: apiKey || undefined,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
 
 const app = express();
 // Allow JSON bodies up to 25MB for handling pamphlet text/PDF uploads
@@ -168,7 +177,6 @@ function seedInitialData() {
       },
     ]);
 
-    // Initial pamphlets for sample room
     roomPamphlets.set(seedRoom1.id, [
       {
         id: 'pamphlet-seed-1',
@@ -187,7 +195,6 @@ function seedInitialData() {
       },
     ]);
 
-    // Initial shared AI history for sample room
     roomAIMessages.set(seedRoom1.id, [
       {
         id: 'aimsg-seed-1',
@@ -257,7 +264,13 @@ function generateUniqueRoomId(): string {
 
 // REST API Endpoints
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString(), roomsCount: rooms.size });
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY);
+  res.json({
+    status: 'ok',
+    time: new Date().toISOString(),
+    roomsCount: rooms.size,
+    geminiConfigured: hasGeminiKey,
+  });
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -389,7 +402,7 @@ app.post('/api/rooms/:roomId/join', (req, res) => {
   const aiMessages = roomAIMessages.get(room.id) || [];
   const pamphlets = (roomPamphlets.get(room.id) || []).map((p) => ({
     ...p,
-    content: undefined, // Don't bloat list view with large base64
+    content: undefined,
   }));
 
   res.json({
@@ -432,8 +445,165 @@ app.get('/api/rooms/:roomId/messages', (req, res) => {
   res.json(messages);
 });
 
+// Helper to detect if a message is asking AI directly in chat (e.g. /ai or @ai or ai/)
+function extractAIPrompt(text: string): { isAICommand: boolean; prompt: string } {
+  if (!text) return { isAICommand: false, prompt: '' };
+  const trimmed = text.trim();
+
+  // Match /ai, @ai, ai/, /هوش at the beginning
+  const prefixMatch = trimmed.match(/^([/@]ai|ai\/|\/هوش)\s*(.*)$/i);
+  if (prefixMatch) {
+    return {
+      isAICommand: true,
+      prompt: prefixMatch[2].trim(),
+    };
+  }
+
+  // Also match /ai or @ai tag anywhere in the message
+  const tagMatch = trimmed.match(/[/@]ai\b\s*(.*)$/i);
+  if (tagMatch) {
+    return {
+      isAICommand: true,
+      prompt: tagMatch[1].trim(),
+    };
+  }
+
+  return { isAICommand: false, prompt: '' };
+}
+
+// Unified processor for chat messages and direct /ai in-chat invocations
+async function processIncomingChatMessage(
+  roomId: string,
+  rawContent: string,
+  senderId: string,
+  senderName: string,
+  senderAvatarBg?: string,
+  customMsgId?: string
+): Promise<ChatMessage> {
+  const now = new Date();
+  const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+  const userChatMessage: ChatMessage = {
+    id: customMsgId || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    roomId,
+    senderId,
+    senderName,
+    senderAvatarBg: senderAvatarBg || avatarGradients[0],
+    content: rawContent,
+    timestamp: timeFormatted,
+    createdAt: now.toISOString(),
+    isSelf: false,
+  };
+
+  if (!roomMessages.has(roomId)) {
+    roomMessages.set(roomId, []);
+  }
+  roomMessages.get(roomId)!.push(userChatMessage);
+  saveStateToDisk();
+
+  // 1. Broadcast user's message to everyone in the room
+  broadcastToRoom(roomId, {
+    type: 'new-message',
+    roomId,
+    message: userChatMessage,
+  });
+
+  // 2. Check if user summoned AI with /ai
+  const { isAICommand, prompt } = extractAIPrompt(rawContent);
+  if (isAICommand) {
+    const room = rooms.get(roomId);
+    const roomTitle = room?.name || 'اتاق مطالعه';
+
+    // Run AI response asynchronously
+    (async () => {
+      try {
+        let aiResponseText = '';
+        let aiSources: string[] = [];
+
+        if (!prompt) {
+          aiResponseText = `سلام ${senderName}! من دستیار هوشمند مطالعه شما هستم 🤖\nبرای پرسش از من کافیست بعد از /ai سوالت رو بنویسی.\n\nمثال:\n/ai دارایی جاری چیست؟`;
+        } else {
+          // Record user's prompt in AI history as well
+          const userAiMsg: AIMessage = {
+            id: `aimsg-${Date.now()}-u`,
+            roomId,
+            type: 'user',
+            sender: senderName,
+            senderId,
+            senderAvatarBg,
+            message: prompt,
+            createdAt: timeFormatted,
+          };
+          if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
+          roomAIMessages.get(roomId)!.push(userAiMsg);
+
+          broadcastToRoom(roomId, {
+            type: 'ai-message',
+            roomId,
+            message: userAiMsg,
+          });
+
+          // Generate Gemini response (utilizing pamphlets or general deep intelligence)
+          const result = await generateAIAnswer(roomId, prompt, senderName, roomTitle);
+          aiResponseText = result.text;
+          aiSources = result.sources;
+        }
+
+        // Create AI message in the main chat room
+        const aiChatMessage: ChatMessage = {
+          id: `msg-ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          roomId,
+          senderId: 'ai-assistant',
+          senderName: '🤖 دستیار هوشمند AI',
+          senderAvatarBg: 'from-purple-600 to-indigo-600',
+          content: aiResponseText,
+          timestamp: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+          createdAt: new Date().toISOString(),
+          isSelf: false,
+          isAI: true,
+        };
+
+        roomMessages.get(roomId)!.push(aiChatMessage);
+
+        // Also record in AI messages history
+        const aiHistoryMsg: AIMessage = {
+          id: `aimsg-${Date.now()}-ai`,
+          roomId,
+          type: 'ai',
+          sender: 'دستیار هوشمند AI',
+          message: aiResponseText,
+          createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+          sources: aiSources,
+        };
+        if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
+        roomAIMessages.get(roomId)!.push(aiHistoryMsg);
+
+        saveStateToDisk();
+
+        // Broadcast AI response in the main chat
+        broadcastToRoom(roomId, {
+          type: 'new-message',
+          roomId,
+          message: aiChatMessage,
+        });
+
+        // Also broadcast to AI Panel
+        broadcastToRoom(roomId, {
+          type: 'ai-message',
+          roomId,
+          message: aiHistoryMsg,
+        });
+      } catch (err: unknown) {
+        console.error('In-chat AI command error:', err);
+      }
+    })();
+  }
+
+  return userChatMessage;
+}
+
 // REST endpoint to send chat messages
-app.post('/api/rooms/:roomId/messages', (req, res) => {
+app.post('/api/rooms/:roomId/messages', async (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
     return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
@@ -445,34 +615,16 @@ app.post('/api/rooms/:roomId/messages', (req, res) => {
     return res.status(400).json({ error: 'پیام نامعتبر است' });
   }
 
-  const now = new Date();
-  const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-
-  const newChatMessage: ChatMessage = {
-    id: id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-    roomId: room.id,
+  const createdMsg = await processIncomingChatMessage(
+    room.id,
+    rawContent,
     senderId,
     senderName,
-    senderAvatarBg: senderAvatarBg || avatarGradients[0],
-    content: rawContent,
-    timestamp: timeFormatted,
-    createdAt: now.toISOString(),
-    isSelf: false,
-  };
+    senderAvatarBg,
+    id
+  );
 
-  if (!roomMessages.has(room.id)) {
-    roomMessages.set(room.id, []);
-  }
-  roomMessages.get(room.id)!.push(newChatMessage);
-  saveStateToDisk();
-
-  broadcastToRoom(room.id, {
-    type: 'new-message',
-    roomId: room.id,
-    message: newChatMessage,
-  });
-
-  res.status(201).json(newChatMessage);
+  res.status(201).json(createdMsg);
 });
 
 // AI Endpoints
@@ -518,14 +670,13 @@ app.post('/api/rooms/:roomId/ai/ask', async (req, res) => {
   roomAIMessages.get(room.id)!.push(userMsg);
   saveStateToDisk();
 
-  // Broadcast user question to all connected members immediately
   broadcastToRoom(room.id, {
     type: 'ai-message',
     roomId: room.id,
     message: userMsg,
   });
 
-  // 2. Query Gemini with Room Pamphlets
+  // 2. Query Gemini with Room Pamphlets or General Deep Intelligence
   try {
     const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name);
 
@@ -542,7 +693,6 @@ app.post('/api/rooms/:roomId/ai/ask', async (req, res) => {
     roomAIMessages.get(room.id)!.push(aiMsg);
     saveStateToDisk();
 
-    // Broadcast AI answer to all members in the room
     broadcastToRoom(room.id, {
       type: 'ai-message',
       roomId: room.id,
@@ -585,7 +735,7 @@ app.get('/api/rooms/:roomId/pamphlets', (req, res) => {
   }
   const list = (roomPamphlets.get(room.id) || []).map((p) => ({
     ...p,
-    content: undefined, // Strip content from summary
+    content: undefined,
   }));
   res.json(list);
 });
@@ -618,7 +768,6 @@ app.post('/api/rooms/:roomId/pamphlets', (req, res) => {
   roomPamphlets.get(room.id)!.push(newPamphlet);
   saveStateToDisk();
 
-  // Notify all members about the newly uploaded pamphlet
   broadcastToRoom(room.id, {
     type: 'pamphlet-added',
     roomId: room.id,
@@ -629,7 +778,10 @@ app.post('/api/rooms/:roomId/pamphlets', (req, res) => {
 });
 
 /**
- * Generate Answer using Gemini 3.8 Flash, integrating uploaded room pamphlets
+ * Generate Answer using Gemini 3.8 Flash
+ * - If pamphlets exist: synthesizes with pamphlets.
+ * - If no pamphlets exist or question is outside: utilizes Gemini's full intelligence ("از ته فکرش").
+ * - Handles missing GEMINI_API_KEY gracefully with setup instructions for Railway.
  */
 async function generateAIAnswer(
   roomId: string,
@@ -637,10 +789,26 @@ async function generateAIAnswer(
   userName: string,
   roomName: string
 ): Promise<{ text: string; sources: string[] }> {
+  const apiKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.API_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    ''
+  ).trim();
+
+  if (!apiKey) {
+    return {
+      text: `⚠️ کلید دسترسی Gemini تنظیم نشده است.
+
+برای فعال‌سازی کامل هوش مصنوعی:
+• اگر روی Railway مستقر هستید: به داشبورد پروژه رفته، در بخش Variables متغیر GEMINI_API_KEY را به همراه کلید API خود اضافه کنید.
+• در محیط لوکال: فایل .env را با متغیر GEMINI_API_KEY="کلید_شما" ذخیره نمایید.`,
+      sources: [],
+    };
+  }
+
   const pamphlets = roomPamphlets.get(roomId) || [];
   const sources: string[] = [];
-
-  // Build context from uploaded pamphlets
   const pamphletContexts: string[] = [];
   const inlineParts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
 
@@ -660,7 +828,6 @@ async function generateAIAnswer(
         text: `[عنوان فایل PDF پیوست: ${p.name}]`,
       });
     } else if (p.content.startsWith('data:')) {
-      // General base64 text/data
       const commaIndex = p.content.indexOf(',');
       const base64Data = commaIndex >= 0 ? p.content.slice(commaIndex + 1) : p.content;
       try {
@@ -670,28 +837,37 @@ async function generateAIAnswer(
         pamphletContexts.push(`=== جزوه: ${p.name} ===`);
       }
     } else {
-      // Plain text content
       pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${p.content.slice(0, 15000)}`);
     }
   }
 
-  const systemInstruction = `شما دستیار هوشمند آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
-پاسخ‌های شما باید دقیق، آموزشی، شیوا، محترمانه و به زبان فارسی سلیس و روان باشد.
+  const hasPamphlets = pamphletContexts.length > 0 || inlineParts.length > 0;
 
-قوانین حیاتی در استفاده از جزوه‌ها:
+  const systemInstruction = hasPamphlets
+    ? `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
+پاسخ‌های شما باید دقیق، عمیق، ساختاریافته، آموزشی، شیوا، محترمانه و به زبان فارسی سلیس و روان باشد.
+
+قوانین پاسخگویی:
 ۱. جزوات و فایل‌های مربوط به این اتاق در اختیارت قرار داده شده است.
-۲. اگر سوال دانشجو مربوط به مطالب جزوه است، اولویت اول و قطعی پاسخگویی بر اساس اطلاعات داخل جزوه است. در صورت استناد مستقیم، نام جزوه را در متن ذکر کن.
-۳. اگر پاسخ سوال در جزوات آپلود شده وجود نداشت یا مبحث متفاوتی بود، صریحاً و با صداقت در یک جمله کوتاه بیان کن که: «این مبحث در جزوات آپلود شده این اتاق ذکر نشده است»، و سپس با تکیه بر دانش جامع خودت پاسخ دقیق، مستدل و ساختاریافته را به دانشجو ارائه بده. هرگز ادعای کذب نکن که پاسخی در جزوه هست در حالی که در آن نیامده است.
-۴. ساختار پاسخ‌ها خوانا باشد (شامل تیترها، نکات کلیدی و در صورت لزوم مثال‌های کوتاه).`;
+۲. اگر سوال دانشجو مربوط به مباحث جزوه است، اولویت اول پاسخگویی بر اساس اطلاعات داخل جزوه است و نام جزوه را در متن ذکر کن.
+۳. اگر پاسخ سوال در جزوه وجود نداشت یا مبحث متفاوتی بود، یا حتی بخشی از آن در جزوه نیامده بود:
+   ابتدا در یک جمله کوتاه اشاره کن: «این مبحث در جزوات فعلی این اتاق ذکر نشده است»، و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود (از عمیق‌ترین لایه‌های دانش و تفکر هوش مصنوعی خود) پاسخ کامل، دقیق، مفهومی، همراه با مثال‌های آموزشی و تفکیک‌شده به زبان فارسی ارائه بده. هرگز از پاسخ دادن طفره نرو و پاسخ ناقص نده.
+۴. در صورت لزوم از لیست‌های شماره‌دار، فرمول‌ها یا نکات کلیدی برای خوانایی بهتر استفاده کن.`
+    : `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
+در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده است.
+بنابراین با تمام عمق، تفکر و قدرت تحلیلی، علمی و استدلالی خود (از عمیق‌ترین لایه‌های دانش و هوش جامع خود) پاسخ کامل، دقیق، کاربردی، مفهومی و به زبان فارسی بسیار روان، شیوا و ساختاریافته به دانشجو ارائه بده.
+در صورت نیاز مثال‌های ملموس، فرمول‌ها و نکات کلیدی موضوع را با دقت شرح بده.`;
 
   let promptText = `دانشجو «${userName}» در اتاق مطالعه «${roomName}» سوال زیر را مطرح کرده است:\n«${question}»\n`;
-  if (pamphletContexts.length > 0) {
-    promptText += `\n\nمتن جزوات آپلود شده در این اتاق:\n${pamphletContexts.join('\n\n')}\n\nلطفاً پاسخ دهید:`;
+  if (hasPamphlets && pamphletContexts.length > 0) {
+    promptText += `\n\nمتن جزوات آپلود شده در این اتاق:\n${pamphletContexts.join('\n\n')}\n\nلطفاً پاسخ کامل و مستدل خود را بنویسید:`;
   }
 
   inlineParts.push({ text: promptText });
 
-  const response = await ai.models.generateContent({
+  const aiClient = getGeminiClient();
+
+  const response = await aiClient.models.generateContent({
     model: 'gemini-3.8-flash',
     contents: {
       parts: inlineParts,
@@ -704,8 +880,9 @@ async function generateAIAnswer(
 
   const answerText = response.text || 'پاسخی از مدل دریافت نشد.';
 
-  // Determine if specific pamphlet was referenced or used
-  const matchedSources = sources.filter((s) => answerText.includes(s) || (pamphlets.length > 0 && answerText.length > 40));
+  const matchedSources = sources.filter(
+    (s) => answerText.includes(s) || (pamphlets.length > 0 && answerText.length > 40)
+  );
 
   return {
     text: answerText,
@@ -754,7 +931,6 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
 
-        // Store client metadata
         clientMetadata.set(ws, { roomId, userId: user.id, userName: user.name });
 
         if (!roomClients.has(roomId)) {
@@ -786,7 +962,6 @@ wss.on('connection', (ws: WebSocket) => {
           content: undefined,
         }));
 
-        // Send full room-init (including Chat messages, AI history, and Pamphlets)
         const initMsg: WSServerMessage = {
           type: 'room-init',
           roomId,
@@ -807,43 +982,26 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
 
+      // Live Chat Message via WebSocket (handles /ai command too!)
       if (msg.type === 'send-message') {
         const room = findRoomCaseInsensitive(msg.roomId);
         if (!room) return;
 
-        const roomId = room.id;
         const rawContent = msg.message?.content?.trim();
         if (!rawContent) return;
 
-        const now = new Date();
-        const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-
-        const newChatMessage: ChatMessage = {
-          id: msg.message.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          roomId,
-          senderId: msg.message.senderId,
-          senderName: msg.message.senderName,
-          senderAvatarBg: msg.message.senderAvatarBg || avatarGradients[0],
-          content: rawContent,
-          timestamp: timeFormatted,
-          createdAt: now.toISOString(),
-          isSelf: false,
-        };
-
-        if (!roomMessages.has(roomId)) roomMessages.set(roomId, []);
-        roomMessages.get(roomId)!.push(newChatMessage);
-        saveStateToDisk();
-
-        broadcastToRoom(roomId, {
-          type: 'new-message',
-          roomId,
-          message: newChatMessage,
-        });
-
+        await processIncomingChatMessage(
+          room.id,
+          rawContent,
+          msg.message.senderId,
+          msg.message.senderName,
+          msg.message.senderAvatarBg,
+          msg.message.id
+        );
         return;
       }
 
-      // Live AI Question via WebSocket
+      // Live AI Question from AI Panel via WebSocket
       if (msg.type === 'ai-ask') {
         const room = findRoomCaseInsensitive(msg.roomId);
         if (!room) return;
@@ -855,7 +1013,6 @@ wss.on('connection', (ws: WebSocket) => {
         const userId = msg.user?.id || `user-${Date.now()}`;
         const timeFormatted = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
-        // User Question
         const userMsg: AIMessage = {
           id: `aimsg-${Date.now()}-u`,
           roomId: room.id,
@@ -871,14 +1028,12 @@ wss.on('connection', (ws: WebSocket) => {
         roomAIMessages.get(room.id)!.push(userMsg);
         saveStateToDisk();
 
-        // Broadcast user's question to everyone in the room immediately
         broadcastToRoom(room.id, {
           type: 'ai-message',
           roomId: room.id,
           message: userMsg,
         });
 
-        // Query Gemini and broadcast AI response
         try {
           const aiAnswer = await generateAIAnswer(room.id, cleanQ, userName, room.name);
           const aiMsg: AIMessage = {

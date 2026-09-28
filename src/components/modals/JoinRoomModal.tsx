@@ -74,7 +74,7 @@ export const JoinRoomModal: React.FC = () => {
             isLoading={isLoadingRoom}
             icon={<LogIn className="w-4 h-4" />}
           >
-            ادامه
+            ورود به اتاق
           </Button>
         </div>
       </form>

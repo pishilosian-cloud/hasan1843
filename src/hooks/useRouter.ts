@@ -1,8 +1,20 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 
+export function convertPersianArabicDigitsToEnglish(str: string): string {
+  if (!str) return '';
+  const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  let result = str;
+  for (let i = 0; i < 10; i++) {
+    result = result.replace(new RegExp(persianDigits[i], 'g'), i.toString());
+    result = result.replace(new RegExp(arabicDigits[i], 'g'), i.toString());
+  }
+  return result;
+}
+
 export function cleanRoomId(input?: string | null): string | undefined {
   if (!input) return undefined;
-  let str = input.trim();
+  let str = convertPersianArabicDigitsToEnglish(input.trim());
   if (str.includes('/room/')) {
     str = str.split('/room/')[1]?.split('/')[0]?.split('?')[0]?.split('#')[0] || str;
   } else if (str.startsWith('/')) {

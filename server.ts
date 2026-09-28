@@ -1364,17 +1364,6 @@ async function generateAIAnswer(
   }
 
   const sources: string[] = [];
-  const inlineParts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
-
-  // If user attached an image for visual reasoning (📷)
-  if (imageAttachment && imageAttachment.data) {
-    inlineParts.push({
-      inlineData: {
-        mimeType: imageAttachment.mimeType || 'image/jpeg',
-        data: imageAttachment.data,
-      },
-    });
-  }
 
   // 1. Search relevant chunks strictly within this roomId
   let relevantResults = pamphletProcessor.searchRelevantChunks(roomId, question, 10);
@@ -1421,30 +1410,68 @@ async function generateAIAnswer(
 پاسخ شما باید سریع، روان، مستقیم، نکته‌وار و به زبان ساده باشد. از اطناب و اضافه گویی دوری کنید و مستقیماً اصل پاسخ و نکات کاربردی را در چند سطر یا بالت‌پوینت شفاف بیان کنید.`;
 
   const systemInstruction = hasPamphletContext
-    ? `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
-پاسخ‌های شما باید دقیق، شیوا، محترمانه و به زبان فارسی سلیس باشد.
+    ? `شما یک دستیار هوشمند، فوق‌پیشرفته و باهوش در اتاق مطالعه آنلاین «${roomName}» هستید.
+شما دارای قابلیت‌های فوق‌پیشرفته تحلیل محتوا، کشف ارتباطات پنهان علمی، استدلال استنتاجی منطقی و استخراج مفاهیم علمی هستید. 
+
+پاسخ‌های شما باید دقیق، شیوا، کاملاً منطقی، ساختاریافته و به زبان فارسی سلیس باشد.
 
 ${modeInstruction}
 
 قوانین سخت‌گیرانه پاسخگویی با استناد به جزوه:
 ۱. بخش‌های مرتبط استخراج شده از جزوه‌های این اتاق به همراه «شماره صفحه» و «نام جزوه» در اختیارتان قرار داده شده است.
-۲. اگر پاسخ در این بخش‌ها موجود است، حتماً نام جزوه و شماره صفحه آن را ذکر کن (مثال: «طبق صفحه ۸۴ جزوه ...»).
-۳. بسیار مهم: اگر پاسخ سوال در این بخش‌های استخراج‌شده از جزوه وجود ندارد، به هیچ عنوان ادعا نکن که پاسخ در جزوه آمده است! صراحتاً در ابتدای پاسخ بگو:
+۲. با ترکیب هوشمندانه تمام اطلاعات ارائه‌شده و با تفکر تحلیلی عمیق پاسخ دهید.
+۳. اگر پاسخ در این بخش‌ها موجود است، حتماً نام جزوه و شماره صفحه آن را ذکر کن (مثال: «طبق صفحه ۸۴ جزوه ...»).
+۴. بسیار مهم: اگر پاسخ سوال در این بخش‌های استخراج‌شده از جزوه وجود ندارد، به هیچ عنوان ادعا نکن که پاسخ در جزوه آمده است! صراحتاً در ابتدای پاسخ بگو:
    «این مورد در بخش‌های استخراج‌شده از جزوه پیدا نشد؛ بر اساس اطلاعات عمومی و دانش تخصصی توضیح می‌دهم:»
    و سپس پاسخ علمی و دقیق را بیان کن.`
-    : `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
+    : `شما یک دستیار هوشمند، فوق‌پیشرفته و باهوش در اتاق مطالعه آنلاین «${roomName}» هستید.
 در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده یا هیچ بخش مرتبطی در جزوه‌ها یافت نشد.
+
+پاسخ‌های شما باید دقیق، شیوا، کاملاً منطقی، ساختاریافته و به زبان فارسی سلیس باشد.
 
 ${modeInstruction}
 
 با تمام عمق، تفکر و قدرت تحلیلی، علمی و استدلالی خود پاسخ کامل، دقیق، کاربردی و به زبان فارسی بسیار روان و ساختاریافته به دانشجو ارائه بده.`;
 
-  let promptText = `دانشجو «${userName}» در اتاق مطالعه «${roomName}» سوال زیر را مطرح کرده است:\n«${question}»\n`;
-  if (hasPamphletContext) {
-    promptText += `\n\nبخش‌های مرتبط استخراج شده از جزوه‌های اتاق:\n${relevantContexts.join('\n\n')}\n\nلطفاً پاسخ را ارائه دهید:`;
+  const contents: any[] = [];
+
+  // Get previous room AI conversation history for multi-turn capability
+  const history = roomAIMessages.get(roomId) || [];
+  // Keep last 12 turns (6 questions + 6 answers) to prevent context bloat while providing rich history
+  const recentHistory = history.slice(-12);
+
+  for (const h of recentHistory) {
+    // Skip if it matches the current question (user's latest question should be pushed at the end)
+    if (h.type === 'user' && h.message === question) {
+      continue;
+    }
+    contents.push({
+      role: h.type === 'user' ? 'user' : 'model',
+      parts: [{ text: h.message }],
+    });
   }
 
-  inlineParts.push({ text: promptText });
+  // Construct current question part
+  const latestParts: any[] = [];
+  if (imageAttachment && imageAttachment.data) {
+    latestParts.push({
+      inlineData: {
+        mimeType: imageAttachment.mimeType || 'image/jpeg',
+        data: imageAttachment.data,
+      },
+    });
+  }
+
+  let promptText = `دانشجو «${userName}» سوال زیر را مطرح کرده است:\n«${question}»\n`;
+  if (hasPamphletContext) {
+    promptText += `\n\nبخش‌های مرتبط تازه استخراج شده از جزوه‌های اتاق:\n${relevantContexts.join('\n\n')}\n\nلطفاً پاسخ دقیق و علمی دهید:`;
+  }
+  latestParts.push({ text: promptText });
+
+  contents.push({
+    role: 'user',
+    parts: latestParts,
+  });
 
   const candidateModels = [
     'gemini-3.5-flash',
@@ -1462,9 +1489,7 @@ ${modeInstruction}
       try {
         const response = await aiClient.models.generateContent({
           model: modelName,
-          contents: {
-            parts: inlineParts,
-          },
+          contents,
           config: {
             systemInstruction,
             temperature: mode === 'complex' ? 0.6 : 0.7,

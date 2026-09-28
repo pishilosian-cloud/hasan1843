@@ -17,9 +17,10 @@ export const RoomView: React.FC = () => {
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
+  const safeMessages = Array.isArray(messages) ? messages : [];
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef<boolean>(true);
-  const prevMessagesCountRef = useRef<number>(messages.length);
+  const prevMessagesCountRef = useRef<number>(safeMessages.length);
 
   const checkIfNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -53,8 +54,8 @@ export const RoomView: React.FC = () => {
 
   // Scroll handling on new messages
   useEffect(() => {
-    const countIncreased = messages.length > prevMessagesCountRef.current;
-    prevMessagesCountRef.current = messages.length;
+    const countIncreased = safeMessages.length > prevMessagesCountRef.current;
+    prevMessagesCountRef.current = safeMessages.length;
 
     if (!countIncreased) {
       return;
@@ -66,14 +67,14 @@ export const RoomView: React.FC = () => {
       setShowScrollBottomBtn(true);
       setUnreadCount((prev) => prev + 1);
     }
-  }, [messages, scrollToBottom]);
+  }, [safeMessages.length, scrollToBottom]);
 
   // Scroll down when AI starts thinking so the thinking indicator is in view
   useEffect(() => {
-    if (aiThinking.isThinking && isNearBottomRef.current) {
+    if (aiThinking && aiThinking.isThinking && isNearBottomRef.current) {
       scrollToBottom(true);
     }
-  }, [aiThinking.isThinking, scrollToBottom]);
+  }, [aiThinking?.isThinking, scrollToBottom]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
@@ -114,7 +115,7 @@ export const RoomView: React.FC = () => {
                 <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mb-2" />
                 <p className="text-xs font-medium">در حال دریافت پیام‌های اتاق...</p>
               </div>
-            ) : messages.length === 0 ? (
+            ) : safeMessages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-center p-8 my-auto animate-in fade-in duration-300">
                 <div className="w-14 h-14 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-3 shadow-xs">
                   <MessageSquare className="w-7 h-7" />
@@ -127,13 +128,13 @@ export const RoomView: React.FC = () => {
                 </p>
               </div>
             ) : (
-              messages.map((msg) => (
+              safeMessages.map((msg) => (
                 <ChatMessageItem key={msg.id} message={msg} />
               ))
             )}
 
             {/* Live In-Chat AI Thinking Indicator */}
-            {aiThinking.isThinking && (
+            {aiThinking && aiThinking.isThinking && (
               <div className="flex gap-2.5 my-3 max-w-[90%] sm:max-w-[80%] animate-in fade-in duration-200">
                 <Avatar name="AI" isAI size="md" />
                 <div className="flex flex-col text-right">
@@ -165,6 +166,7 @@ export const RoomView: React.FC = () => {
           {showScrollBottomBtn && (
             <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 animate-in fade-in zoom-in-95 duration-200">
               <button
+                type="button"
                 onClick={() => scrollToBottom(true)}
                 className="flex items-center gap-1.5 bg-indigo-600 text-white dark:bg-indigo-500 px-3.5 py-1.5 rounded-full text-xs font-semibold shadow-lg hover:bg-indigo-700 transition-all cursor-pointer active:scale-95"
               >

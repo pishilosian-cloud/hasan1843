@@ -19,17 +19,20 @@ import {
 
 export const AIPanel: React.FC = () => {
   const {
-    aiMessages,
+    aiMessages = [],
     sendAIQuestion,
     sendAIVision,
-    pamphlets,
+    pamphlets = [],
     uploadPamphlet,
-    isAskingAI,
-    aiMode,
+    isAskingAI = false,
+    aiMode = 'simple',
     setAiMode,
-    aiThinking,
+    aiThinking = { isThinking: false },
     currentUser,
   } = useStudyRoom();
+
+  const safeAIMessages = Array.isArray(aiMessages) ? aiMessages : [];
+  const safePamphlets = Array.isArray(pamphlets) ? pamphlets : [];
 
   const [question, setQuestion] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ file: File; previewUrl: string } | null>(null);
@@ -39,7 +42,7 @@ export const AIPanel: React.FC = () => {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isUserScrolledUpRef = useRef<boolean>(false);
-  const prevMsgCountRef = useRef<number>(aiMessages.length);
+  const prevMsgCountRef = useRef<number>(safeAIMessages.length);
 
   // Monitor user scrolling: if user scrolls up to read, do NOT hijack their position!
   const handleScroll = () => {
@@ -54,8 +57,8 @@ export const AIPanel: React.FC = () => {
     const el = messagesContainerRef.current;
     if (!el) return;
 
-    const countIncreased = aiMessages.length > prevMsgCountRef.current;
-    prevMsgCountRef.current = aiMessages.length;
+    const countIncreased = safeAIMessages.length > prevMsgCountRef.current;
+    prevMsgCountRef.current = safeAIMessages.length;
 
     if (countIncreased && !isUserScrolledUpRef.current) {
       el.scrollTo({
@@ -63,7 +66,7 @@ export const AIPanel: React.FC = () => {
         behavior: 'smooth',
       });
     }
-  }, [aiMessages]);
+  }, [safeAIMessages.length]);
 
   const handleAsk = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,7 +192,7 @@ export const AIPanel: React.FC = () => {
             <span>📚 جزوه اتاق</span>
           </div>
           <span className="text-[10px] font-medium text-slate-500 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/40">
-            {pamphlets.length} فایل
+            {safePamphlets.length} فایل
           </span>
         </div>
 
@@ -221,9 +224,9 @@ export const AIPanel: React.FC = () => {
         </button>
 
         {/* Pamphlet List & Live Processing Progress */}
-        {pamphlets.length > 0 && (
+        {safePamphlets.length > 0 && (
           <div className="mt-2.5 space-y-2 max-h-36 overflow-y-auto pl-1 pr-0.5">
-            {pamphlets.map((item) => (
+            {safePamphlets.map((item) => (
               <div
                 key={item.id}
                 className="p-2 rounded-xl bg-white/95 dark:bg-slate-900/95 border border-indigo-100 dark:border-indigo-900/40 text-[11px] shadow-2xs"
@@ -299,7 +302,7 @@ export const AIPanel: React.FC = () => {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto space-y-3 mb-2.5 pr-1 pl-0.5 overscroll-contain"
       >
-        {aiMessages.length === 0 ? (
+        {safeAIMessages.length === 0 ? (
           <div className="bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-2xl border border-slate-200/60 dark:border-slate-800 text-center my-auto">
             <Sparkles className="w-6 h-6 text-indigo-500 mx-auto mb-1.5 animate-pulse" />
             <p className="text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
@@ -312,13 +315,14 @@ export const AIPanel: React.FC = () => {
         ) : null}
 
         {/* Quick Prompts */}
-        {aiMessages.length < 2 && (
+        {safeAIMessages.length < 2 && (
           <div className="space-y-1.5">
             <p className="text-[11px] font-semibold text-slate-400 px-1">پیشنهاد سریع:</p>
             <div className="flex flex-wrap gap-1.5">
               {quickPrompts.map((p, idx) => (
                 <button
                   key={idx}
+                  type="button"
                   onClick={() => handleQuickPrompt(p)}
                   disabled={isAskingAI}
                   className="text-[11px] py-1 px-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-indigo-100 hover:text-indigo-700 dark:hover:bg-indigo-900/60 dark:hover:text-indigo-300 transition-colors text-right cursor-pointer disabled:opacity-50"
@@ -331,9 +335,10 @@ export const AIPanel: React.FC = () => {
         )}
 
         {/* AI Shared Messages List */}
-        {aiMessages.map((item) => {
+        {safeAIMessages.map((item) => {
+          if (!item) return null;
           const isUser = item.type === 'user';
-          const isSelf = item.senderId === currentUser.id;
+          const isSelf = item.senderId === currentUser?.id;
 
           if (isUser) {
             return (
@@ -344,7 +349,7 @@ export const AIPanel: React.FC = () => {
                 <div className="flex items-center justify-between text-[11px] text-indigo-800 dark:text-indigo-300">
                   <div className="flex items-center gap-1.5 font-bold">
                     <User className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>{item.sender} {isSelf ? '(شما)' : ''}</span>
+                    <span>{item.sender || 'کاربر'} {isSelf ? '(شما)' : ''}</span>
                   </div>
                   <span className="text-[10px] text-indigo-400 dark:text-indigo-500 font-mono">
                     {item.createdAt}
@@ -391,7 +396,7 @@ export const AIPanel: React.FC = () => {
                 {item.message}
               </div>
 
-              {item.sources && item.sources.length > 0 && (
+              {item.sources && Array.isArray(item.sources) && item.sources.length > 0 && (
                 <div className="pt-2 border-t border-slate-200/50 dark:border-slate-700/50 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400">
                   <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
                   <span className="font-semibold">بر اساس جزوه:</span>
@@ -410,7 +415,7 @@ export const AIPanel: React.FC = () => {
         })}
 
         {/* Live Interactive Thinking Indicator */}
-        {(isAskingAI || aiThinking.isThinking) && (
+        {(isAskingAI || Boolean(aiThinking?.isThinking)) && (
           <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 dark:from-purple-950/40 dark:via-indigo-950/30 dark:to-purple-950/40 border border-purple-300/80 dark:border-purple-700/80 text-right space-y-2 animate-pulse shadow-sm">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-bold text-purple-700 dark:text-purple-300">
@@ -429,7 +434,7 @@ export const AIPanel: React.FC = () => {
                 <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce"></span>
               </div>
               <p className="truncate">
-                {aiThinking.question ? `«${aiThinking.question}»` : 'بررسی منابع و فرموله‌کردن پاسخ...'}
+                {aiThinking?.question ? `«${aiThinking.question}»` : 'بررسی منابع و فرموله‌کردن پاسخ...'}
               </p>
             </div>
           </div>

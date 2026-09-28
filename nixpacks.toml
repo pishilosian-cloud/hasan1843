@@ -1,3 +1,11 @@
-# Railway Nixpacks Configuration
-[variables]
-NIXPACKS_BUN_VERSION = "1.4.0"
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npx tsx server.ts"

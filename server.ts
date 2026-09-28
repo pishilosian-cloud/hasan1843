@@ -1295,7 +1295,16 @@ async function generateAIAnswer(
   }
 
   // 1. Search relevant chunks strictly within this roomId
-  const relevantResults = pamphletProcessor.searchRelevantChunks(roomId, question, 8);
+  let relevantResults = pamphletProcessor.searchRelevantChunks(roomId, question, 10);
+
+  // Fallback: If keyword search yielded no matches but the room has processed chunks, load the top chunks of the room's pamphlets
+  if (relevantResults.length === 0) {
+    const allChunks = loadAllChunksForRoom(roomId);
+    if (allChunks.length > 0) {
+      relevantResults = allChunks.slice(0, 10).map((chunk) => ({ chunk, score: 1 }));
+    }
+  }
+
   const relevantContexts: string[] = [];
 
   for (const r of relevantResults) {
@@ -1355,7 +1364,13 @@ ${modeInstruction}
 
   inlineParts.push({ text: promptText });
 
-  const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+  const candidateModels = [
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+  ];
   let lastError: unknown = null;
   let answerText = '';
 

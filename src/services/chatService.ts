@@ -51,6 +51,7 @@ class ChatService {
   private aiHistoryListeners = new Set<AIHistoryHandler>();
   private aiThinkingListeners = new Set<AIThinkingHandler>();
   private pamphletListeners = new Set<PamphletHandler>();
+  private pamphletRemovedListeners = new Set<(fileId: string) => void>();
   private pamphletProgressListeners = new Set<(progress: {
     fileId: string;
     roomId: string;
@@ -271,6 +272,13 @@ class ChatService {
           if (data.type === 'pamphlet-progress') {
             if (data.roomId === this.currentRoomId) {
               this.pamphletProgressListeners.forEach((fn) => fn(data));
+            }
+            return;
+          }
+
+          if (data.type === 'pamphlet-removed') {
+            if (data.roomId === this.currentRoomId) {
+              this.pamphletRemovedListeners.forEach((fn) => fn(data.fileId));
             }
             return;
           }
@@ -725,6 +733,11 @@ class ChatService {
   public onPamphletAdded(listener: PamphletHandler) {
     this.pamphletListeners.add(listener);
     return () => this.pamphletListeners.delete(listener);
+  }
+
+  public onPamphletRemoved(listener: (fileId: string) => void) {
+    this.pamphletRemovedListeners.add(listener);
+    return () => this.pamphletRemovedListeners.delete(listener);
   }
 
   public onPresenceUpdate(listener: PresenceHandler) {

@@ -149,6 +149,7 @@ export type WSServerMessage =
   | { type: 'ai-history'; roomId: string; messages: AIMessage[] }
   | { type: 'ai-thinking'; roomId: string; isThinking: boolean; question?: string; userName?: string; mode?: AIMode }
   | { type: 'pamphlet-added'; roomId: string; pamphlet: PamphletFile }
+  | { type: 'pamphlet-removed'; roomId: string; fileId: string }
   | {
       type: 'pamphlet-progress';
       roomId: string;

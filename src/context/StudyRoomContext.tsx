@@ -66,7 +66,7 @@ interface StudyRoomContextType {
   sendAIQuestion: (question: string, overrideMode?: AIMode) => Promise<void>;
   sendAIVision: (question: string, file: File, overrideMode?: AIMode) => Promise<void>;
   uploadPamphlet: (file: File) => Promise<void>;
-  deletePamphlet: (fileId: string) => Promise<boolean>;
+  deletePamphlet: (fileId: string) => Promise<void>;
 
   toggleVoiceCall: () => void;
   toggleMicrophone: () => void;
@@ -290,10 +290,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     });
 
-    const unsubPamphletDeleted = chatService.onPamphletDeleted((deletedId) => {
-      setPamphlets((prev) => prev.filter((p) => p.id !== deletedId));
-    });
-
     const unsubPamphletProgress = chatService.onPamphletProgress((progress) => {
       setPamphlets((prev) =>
         prev.map((item) => {
@@ -310,6 +306,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           return item;
         })
       );
+    });
+
+    const unsubPamphletRemoved = chatService.onPamphletRemoved((fileId) => {
+      setPamphlets((prev) => prev.filter((p) => p.id !== fileId));
     });
 
     const unsubPresence = chatService.onPresenceUpdate((updatedMembers) => {
@@ -338,8 +338,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubAIHistory();
       unsubAIThinking();
       unsubPamphlet();
-      unsubPamphletDeleted();
       unsubPamphletProgress();
+      unsubPamphletRemoved();
       unsubPresence();
       unsubStatus();
       unsubError();
@@ -781,24 +781,21 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  const deletePamphlet = async (fileId: string): Promise<boolean> => {
-    if (!activeRoom) {
-      showToast('ابتدا وارد اتاق شوید', 'error');
-      return false;
-    }
+  const deletePamphlet = async (fileId: string) => {
+    if (!activeRoom) return;
     try {
-      const ok = await chatService.deletePamphlet(fileId);
-      if (ok) {
+      const res = await fetch(`/api/rooms/${activeRoom.id}/pamphlets/${fileId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
         setPamphlets((prev) => prev.filter((p) => p.id !== fileId));
-        showToast('جزوه با موفقیت حذف شد.');
-        return true;
+        showToast('جزوه با موفقیت حذف شد.', 'success');
       } else {
-        showToast('خطا در حذف جزوه', 'error');
-        return false;
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || 'خطا در حذف جزوه', 'error');
       }
     } catch {
-      showToast('خطا در حذف جزوه', 'error');
-      return false;
+      showToast('خطا در ارتباط با سرور برای حذف جزوه', 'error');
     }
   };
 

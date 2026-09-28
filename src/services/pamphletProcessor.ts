@@ -282,6 +282,31 @@ export function deleteChunksForFile(roomId: string, fileId: string): void {
 export class PamphletProcessor {
   private activeJobs = new Map<string, boolean>();
 
+  public deletePamphlet(roomId: string, fileId: string): boolean {
+    this.activeJobs.delete(fileId);
+
+    // 1. Delete extracted chunks and job checkpoint
+    deleteChunksForFile(roomId, fileId);
+
+    // 2. Delete physical uploaded file(s)
+    const roomUploads = path.join(UPLOADS_DIR, roomId);
+    if (fs.existsSync(roomUploads)) {
+      try {
+        const files = fs.readdirSync(roomUploads);
+        for (const f of files) {
+          if (f.startsWith(fileId)) {
+            try {
+              fs.unlinkSync(path.join(roomUploads, f));
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    console.log(`[PAMPHLET LOG] PAMPHLET_DELETED roomId=${roomId} fileId=${fileId}`);
+    return true;
+  }
+
   public getUploadPath(roomId: string, fileId: string, originalName: string): string {
     const roomUploads = path.join(UPLOADS_DIR, roomId);
     if (!fs.existsSync(roomUploads)) {

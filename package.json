@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "bun@1.2.15",
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.2.0"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",

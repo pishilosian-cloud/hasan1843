@@ -406,10 +406,15 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           category: roomData.category,
           createdAt: roomData.createdAt,
           hostName: roomData.ownerName,
-          membersCount: roomData.members.length,
+          membersCount: roomData.members?.length || 1,
         });
 
-        setIsLoadingMessages(true);
+        if (roomData.members && roomData.members.length > 0) {
+          setMembers(mapMembersToUsers(roomData.members));
+        }
+
+        setIsLoadingMessages(false);
+
         chatService.connectToRoom(roomData.id, {
           id: currentUser.id,
           name: effectiveUserName,
@@ -466,6 +471,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       closeModal();
       setIsLoadingMessages(true);
+      setTimeout(() => setIsLoadingMessages(false), 2000);
       navigate(`/room/${newRoom.id}`);
 
       chatService.connectToRoom(newRoom.id, {
@@ -520,6 +526,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     closeModal();
     setIsLoadingMessages(true);
+    setTimeout(() => setIsLoadingMessages(false), 2000);
     navigate(`/room/${roomData.id}`);
 
     chatService.connectToRoom(roomData.id, {

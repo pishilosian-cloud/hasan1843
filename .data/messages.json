@@ -96,5 +96,44 @@
       "isSelf": false,
       "isAI": true
     }
-  ]
+  ],
+  "WXK7XS": [
+    {
+      "id": "msg-meet-1790589007643",
+      "roomId": "WXK7XS",
+      "senderId": "system-meet",
+      "senderName": "جلسه Google Meet",
+      "senderAvatarBg": "from-blue-600 to-emerald-600",
+      "content": "📞 جلسه صوتی/تصویری گوگل میت توسط س ایجاد شد.\nلینک ورود: https://meet.google.com/new",
+      "timestamp": "۰۹:۵۰",
+      "createdAt": "2026-09-28T09:50:07.642Z",
+      "isSelf": false
+    },
+    {
+      "id": "msg-meet-1790589007650",
+      "roomId": "WXK7XS",
+      "senderId": "system-meet",
+      "senderName": "جلسه Google Meet",
+      "senderAvatarBg": "from-blue-600 to-emerald-600",
+      "content": "📞 جلسه صوتی/تصویری گوگل میت توسط س شروع شد.\nلینک ورود: https://meet.google.com/new",
+      "timestamp": "۰۹:۵۰",
+      "createdAt": "2026-09-28T09:50:07.650Z",
+      "isSelf": false
+    }
+  ],
+  "ZVBDMT": [
+    {
+      "id": "msg-1790591113410-enqjy",
+      "roomId": "ZVBDMT",
+      "senderId": "user-t1",
+      "senderName": "تستر ۱",
+      "senderAvatarBg": "from-indigo-500 to-purple-600",
+      "content": "سلام از کاربر اول به کاربر دوم",
+      "timestamp": "۱۰:۲۵",
+      "createdAt": "2026-09-28T10:25:13.409Z",
+      "isSelf": false
+    }
+  ],
+  "8GXWTX": [],
+  "ROOM-5563": []
 }

@@ -220,26 +220,73 @@ export const AIPanel: React.FC = () => {
           )}
         </button>
 
-        {/* Pamphlet List */}
+        {/* Pamphlet List & Live Processing Progress */}
         {pamphlets.length > 0 && (
-          <div className="mt-2 space-y-1 max-h-20 overflow-y-auto pl-1 pr-0.5">
+          <div className="mt-2.5 space-y-2 max-h-36 overflow-y-auto pl-1 pr-0.5">
             {pamphlets.map((item) => (
               <div
                 key={item.id}
-                className="flex items-center justify-between p-1.5 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-indigo-100 dark:border-indigo-900/40 text-[11px]"
+                className="p-2 rounded-xl bg-white/95 dark:bg-slate-900/95 border border-indigo-100 dark:border-indigo-900/40 text-[11px] shadow-2xs"
               >
-                <div className="flex items-center gap-1.5 truncate max-w-[170px]">
-                  <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={item.name}>
-                    {item.name}
-                  </span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5 truncate max-w-[170px]">
+                    <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                    <span className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={item.name}>
+                      {item.name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[9px] font-mono uppercase bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-slate-500">
+                      {item.type}
+                    </span>
+                    <span className="text-[10px] text-slate-400">{item.size}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-[9px] font-mono uppercase bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-slate-500">
-                    {item.type}
-                  </span>
-                  <span className="text-[10px] text-slate-400">{item.size}</span>
-                </div>
+
+                {/* Progress / Status Indicator */}
+                {item.status === 'processing' ? (
+                  <div className="mt-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between text-[10px] text-indigo-600 dark:text-indigo-400 mb-1">
+                      <span className="flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>
+                          در حال پردازش جزوه...
+                          {item.pagesCount ? ` صفحه ${item.processedPages || 0} از ${item.pagesCount}` : ''}
+                        </span>
+                      </span>
+                      <span className="font-mono font-bold">{item.progressPercent || 0}٪</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-indigo-100 dark:bg-indigo-950 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full transition-all duration-300"
+                        style={{ width: `${Math.max(5, item.progressPercent || 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : item.status === 'error' ? (
+                  <div className="mt-1 pt-1 border-t border-rose-100 dark:border-rose-950/40 flex items-center justify-between text-[10px] text-rose-600 dark:text-rose-400">
+                    <span>خطا در پردازش جزوه</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950 hover:bg-rose-100 cursor-pointer font-bold"
+                    >
+                      تلاش مجدد
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1 pt-0.5 flex items-center justify-between text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                      <span>آماده پرسش و جست‌وجو</span>
+                    </span>
+                    {item.pagesCount ? (
+                      <span className="text-slate-400">{item.pagesCount} صفحه</span>
+                    ) : null}
+                  </div>
+                )}
               </div>
             ))}
           </div>

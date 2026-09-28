@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
 import type {
   RoomData,
@@ -12,14 +13,33 @@ import type {
   ChatMessage,
   AIMessage,
   PamphletFile,
+  PamphletChunk,
   AIMode,
   WSClientMessage,
   WSServerMessage,
 } from './src/types';
+import {
+  pamphletProcessor,
+  saveJobCheckpoint,
+  getJob,
+  loadAllChunksForRoom,
+  type ProcessingJob,
+} from './src/services/pamphletProcessor';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
+
+const tempUploadDir = path.resolve(process.cwd(), '.data/uploads/temp');
+if (!fs.existsSync(tempUploadDir)) {
+  fs.mkdirSync(tempUploadDir, { recursive: true });
+}
+const upload = multer({
+  dest: tempUploadDir,
+  limits: {
+    fileSize: 150 * 1024 * 1024, // 150MB maximum
+  },
+});
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (
@@ -968,26 +988,53 @@ app.get('/api/rooms/:roomId/pamphlets', (req, res) => {
   res.json(list);
 });
 
-app.post('/api/rooms/:roomId/pamphlets', (req, res) => {
+// 1. Direct Multi-part Streamed Upload: Independent of client connection to Gemini
+app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) {
+    if (req.file) fs.unlink(req.file.path, () => {});
     return res.status(404).json({ error: 'اتاق پیدا نشد' });
   }
 
-  const { name, size, type, content, uploadedBy } = req.body;
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'نام فایل الزامی است' });
+  if (!req.file) {
+    return res.status(400).json({ error: 'فایلی ارسال نشده است' });
   }
 
+  // Proper UTF-8 Persian/English file name decoding
+  let originalName = req.file.originalname;
+  try {
+    originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  } catch {}
+
+  const uploadedBy = (req.body.uploadedBy || 'کاربر').trim();
+  const fileId = `pamp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const ext = path.extname(originalName).replace('.', '').toUpperCase() || 'FILE';
+  const targetPath = pamphletProcessor.getUploadPath(room.id, fileId, originalName);
+
+  try {
+    fs.renameSync(req.file.path, targetPath);
+  } catch {
+    fs.copyFileSync(req.file.path, targetPath);
+    try { fs.unlinkSync(req.file.path); } catch {}
+  }
+
+  const formattedSize =
+    req.file.size < 1024 * 1024
+      ? `${(req.file.size / 1024).toFixed(0)} کیلوبایت`
+      : `${(req.file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
+
   const newPamphlet: PamphletFile = {
-    id: `pamphlet-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    id: fileId,
     roomId: room.id,
-    name: name.trim(),
-    size: size || '۱ مگابایت',
-    type: (type || 'TXT').toUpperCase(),
-    uploadedBy: (uploadedBy || 'کاربر').trim(),
+    name: originalName,
+    size: formattedSize,
+    type: ext,
+    uploadedBy,
     createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-    content: content || '',
+    status: 'processing',
+    processedPages: 0,
+    progressPercent: 0,
+    totalChunks: 0,
   };
 
   if (!roomPamphlets.has(room.id)) {
@@ -999,17 +1046,225 @@ app.post('/api/rooms/:roomId/pamphlets', (req, res) => {
   broadcastToRoom(room.id, {
     type: 'pamphlet-added',
     roomId: room.id,
-    pamphlet: { ...newPamphlet, content: undefined },
+    pamphlet: newPamphlet,
+  });
+
+  const job: ProcessingJob = {
+    fileId,
+    roomId: room.id,
+    fileName: originalName,
+    filePath: targetPath,
+    fileType: ext,
+    totalPages: 0,
+    processedPages: 0,
+    status: 'processing',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  saveJobCheckpoint(job);
+
+  // Background Async Processing: won't timeout the HTTP upload request!
+  pamphletProcessor.processDocument(
+    job,
+    (progress) => {
+      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+      if (p) {
+        p.status = progress.status;
+        p.processedPages = progress.current;
+        p.pagesCount = progress.total;
+        p.progressPercent = progress.percent;
+        p.error = progress.error;
+      }
+      saveStateToDisk();
+
+      broadcastToRoom(room.id, {
+        type: 'pamphlet-progress',
+        roomId: room.id,
+        fileId,
+        fileName: originalName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    },
+    getGeminiClient()
+  ).catch((err) => {
+    console.error(`[Upload Processing Error for ${fileId}]:`, err);
   });
 
   res.status(201).json(newPamphlet);
 });
 
+// 2. Backward-Compatible Upload Endpoint (Base64 or Raw Text)
+app.post('/api/rooms/:roomId/pamphlets', async (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  }
+
+  const { name, size, type, content, uploadedBy } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'نام فایل الزامی است' });
+  }
+
+  const fileId = `pamphlet-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const ext = (type || path.extname(name).replace('.', '') || 'TXT').toUpperCase();
+  const originalName = name.trim();
+  const targetPath = pamphletProcessor.getUploadPath(room.id, fileId, originalName);
+
+  // Write content to disk
+  if (content && typeof content === 'string') {
+    if (content.startsWith('data:')) {
+      const commaIdx = content.indexOf(',');
+      const base64Data = commaIdx >= 0 ? content.slice(commaIdx + 1) : content;
+      fs.writeFileSync(targetPath, Buffer.from(base64Data, 'base64'));
+    } else {
+      fs.writeFileSync(targetPath, content, 'utf-8');
+    }
+  } else {
+    fs.writeFileSync(targetPath, '', 'utf-8');
+  }
+
+  const newPamphlet: PamphletFile = {
+    id: fileId,
+    roomId: room.id,
+    name: originalName,
+    size: size || '۱ مگابایت',
+    type: ext,
+    uploadedBy: (uploadedBy || 'کاربر').trim(),
+    createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+    status: 'processing',
+    processedPages: 0,
+    progressPercent: 0,
+    totalChunks: 0,
+  };
+
+  if (!roomPamphlets.has(room.id)) {
+    roomPamphlets.set(room.id, []);
+  }
+  roomPamphlets.get(room.id)!.push(newPamphlet);
+  saveStateToDisk();
+
+  broadcastToRoom(room.id, {
+    type: 'pamphlet-added',
+    roomId: room.id,
+    pamphlet: newPamphlet,
+  });
+
+  const job: ProcessingJob = {
+    fileId,
+    roomId: room.id,
+    fileName: originalName,
+    filePath: targetPath,
+    fileType: ext,
+    totalPages: 0,
+    processedPages: 0,
+    status: 'processing',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  saveJobCheckpoint(job);
+
+  pamphletProcessor.processDocument(
+    job,
+    (progress) => {
+      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+      if (p) {
+        p.status = progress.status;
+        p.processedPages = progress.current;
+        p.pagesCount = progress.total;
+        p.progressPercent = progress.percent;
+        p.error = progress.error;
+      }
+      saveStateToDisk();
+
+      broadcastToRoom(room.id, {
+        type: 'pamphlet-progress',
+        roomId: room.id,
+        fileId,
+        fileName: originalName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    },
+    getGeminiClient()
+  ).catch((err) => {
+    console.error(`[Base64 Upload Processing Error]:`, err);
+  });
+
+  res.status(201).json(newPamphlet);
+});
+
+// 3. Check Job Status
+app.get('/api/rooms/:roomId/pamphlets/:fileId/status', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  const job = getJob(req.params.fileId);
+  if (!job || job.roomId !== room.id) {
+    return res.status(404).json({ error: 'پردازش این فایل پیدا نشد' });
+  }
+  res.json(job);
+});
+
+// 4. Resume Interrupted Job
+app.post('/api/rooms/:roomId/pamphlets/:fileId/resume', async (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  const job = getJob(req.params.fileId);
+  if (!job || job.roomId !== room.id) {
+    return res.status(404).json({ error: 'پردازش این فایل پیدا نشد' });
+  }
+
+  pamphletProcessor.processDocument(
+    job,
+    (progress) => {
+      broadcastToRoom(room.id, {
+        type: 'pamphlet-progress',
+        roomId: room.id,
+        fileId: job.fileId,
+        fileName: job.fileName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    },
+    getGeminiClient()
+  ).catch((err) => console.error('Resume error:', err));
+
+  res.json({ message: 'پردازش مجدداً فعال شد', job });
+});
+
+// 5. Get Chunks for Room
+app.get('/api/rooms/:roomId/pamphlets/chunks', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  const chunks = loadAllChunksForRoom(room.id);
+  res.json({ count: chunks.length, chunks });
+});
+
+// 6. Search Relevant Chunks in Room (Room-Isolated)
+app.get('/api/rooms/:roomId/pamphlets/search', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  const query = String(req.query.q || '');
+  const results = pamphletProcessor.searchRelevantChunks(room.id, query, 10);
+  res.json({ count: results.length, results });
+});
+
 /**
  * Generate Answer using Gemini 3.8 Flash
- * - Supports simple (concise) vs complex (deep analytical reasoning) mode
- * - Strictly isolates context to the specified roomId
- * - Truncates context to safe length to prevent overflow
+ * - Search relevant chunks with strict Room Isolation
+ * - Passes ONLY the relevant chunks with pageNumber metadata to Gemini
+ * - If answer is not in the chunks, explicitly tells student it was not found in pamphlet
  */
 async function generateAIAnswer(
   roomId: string,
@@ -1026,10 +1281,7 @@ async function generateAIAnswer(
     throw new Error('GEMINI_API_KEY_NOT_CONFIGURED');
   }
 
-  // Room Isolation: Read ONLY pamphlets belonging to this specific room
-  const pamphlets = roomPamphlets.get(roomId) || [];
   const sources: string[] = [];
-  const pamphletContexts: string[] = [];
   const inlineParts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
 
   // If user attached an image for visual reasoning (📷)
@@ -1042,49 +1294,32 @@ async function generateAIAnswer(
     });
   }
 
-  let accumulatedChars = 0;
-  const MAX_CONTEXT_CHARS = 12000;
+  // 1. Search relevant chunks strictly within this roomId
+  const relevantResults = pamphletProcessor.searchRelevantChunks(roomId, question, 8);
+  const relevantContexts: string[] = [];
 
-  for (const p of pamphlets) {
-    sources.push(p.name);
-    if (!p.content) continue;
+  for (const r of relevantResults) {
+    const sourceLabel = `${r.chunk.fileName} (صفحه ${r.chunk.pageNumber})`;
+    if (!sources.includes(sourceLabel)) {
+      sources.push(sourceLabel);
+    }
+    relevantContexts.push(
+      `=== [جزوه: «${r.chunk.fileName}» | صفحه: ${r.chunk.pageNumber} | بخش: ${r.chunk.chunkIndex + 1}] ===\n${r.chunk.text}`
+    );
+  }
 
-    if (p.type === 'PDF' && p.content.startsWith('data:application/pdf;base64,')) {
-      const base64Data = p.content.replace('data:application/pdf;base64,', '');
-      inlineParts.push({
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: base64Data,
-        },
-      });
-      inlineParts.push({
-        text: `[عنوان فایل PDF پیوست: ${p.name}]`,
-      });
-    } else if (p.content.startsWith('data:')) {
-      const commaIndex = p.content.indexOf(',');
-      const base64Data = commaIndex >= 0 ? p.content.slice(commaIndex + 1) : p.content;
-      try {
-        const decodedText = Buffer.from(base64Data, 'base64').toString('utf-8');
-        const remainingSpace = Math.max(0, MAX_CONTEXT_CHARS - accumulatedChars);
-        if (remainingSpace > 0) {
-          const slice = decodedText.slice(0, remainingSpace);
-          accumulatedChars += slice.length;
-          pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${slice}`);
-        }
-      } catch {
-        pamphletContexts.push(`=== جزوه: ${p.name} ===`);
-      }
-    } else {
-      const remainingSpace = Math.max(0, MAX_CONTEXT_CHARS - accumulatedChars);
-      if (remainingSpace > 0) {
-        const slice = p.content.slice(0, remainingSpace);
-        accumulatedChars += slice.length;
-        pamphletContexts.push(`=== جزوه: ${p.name} (آپلود شده توسط ${p.uploadedBy}) ===\n${slice}`);
+  // Backward-compatibility: if no chunks indexed yet, check in-memory pamphlets
+  if (relevantContexts.length === 0) {
+    const rawPamphlets = roomPamphlets.get(roomId) || [];
+    for (const p of rawPamphlets) {
+      if (p.content && typeof p.content === 'string' && !p.content.startsWith('data:')) {
+        sources.push(p.name);
+        relevantContexts.push(`=== [جزوه: «${p.name}»] ===\n${p.content.slice(0, 4000)}`);
       }
     }
   }
 
-  const hasPamphlets = pamphletContexts.length > 0 || inlineParts.length > (imageAttachment ? 1 : 0);
+  const hasPamphletContext = relevantContexts.length > 0;
 
   const modeInstruction =
     mode === 'complex'
@@ -1094,27 +1329,28 @@ async function generateAIAnswer(
       : `حالت کاری شما: «نسخه معمولی و خلاصه».
 پاسخ شما باید سریع، روان، مستقیم، نکته‌وار و به زبان ساده باشد. از اطناب و اضافه گویی دوری کنید و مستقیماً اصل پاسخ و نکات کاربردی را در چند سطر یا بالت‌پوینت شفاف بیان کنید.`;
 
-  const systemInstruction = hasPamphlets
+  const systemInstruction = hasPamphletContext
     ? `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
 پاسخ‌های شما باید دقیق، شیوا، محترمانه و به زبان فارسی سلیس باشد.
 
 ${modeInstruction}
 
-قوانین پاسخگویی:
-۱. جزوات و فایل‌های مربوط به این اتاق در اختیارت قرار داده شده است.
-۲. اگر سوال دانشجو مربوط به مباحث جزوه است، اولویت اول پاسخگویی بر اساس اطلاعات داخل جزوه است و نام جزوه را در متن ذکر کن.
-۳. اگر پاسخ سوال در جزوه وجود نداشت یا مبحث متفاوتی بود، یا بخشی از آن در جزوه نیامده بود:
-   صراحتاً بگو: «این مورد در جزوه پیدا نشد؛ می‌تونم بر اساس اطلاعات عمومی توضیحش بدم.» و سپس با تمام عمق و توانایی تحلیلی، علمی و استدلالی خود بر اساس حالت تعیین شده (${mode === 'complex' ? 'تحلیلی و جامع' : 'خلاصه و مفید'}) پاسخ کامل و دقیق به زبان فارسی ارائه بده.`
+قوانین سخت‌گیرانه پاسخگویی با استناد به جزوه:
+۱. بخش‌های مرتبط استخراج شده از جزوه‌های این اتاق به همراه «شماره صفحه» و «نام جزوه» در اختیارتان قرار داده شده است.
+۲. اگر پاسخ در این بخش‌ها موجود است، حتماً نام جزوه و شماره صفحه آن را ذکر کن (مثال: «طبق صفحه ۸۴ جزوه ...»).
+۳. بسیار مهم: اگر پاسخ سوال در این بخش‌های استخراج‌شده از جزوه وجود ندارد، به هیچ عنوان ادعا نکن که پاسخ در جزوه آمده است! صراحتاً در ابتدای پاسخ بگو:
+   «این مورد در بخش‌های استخراج‌شده از جزوه پیدا نشد؛ بر اساس اطلاعات عمومی و دانش تخصصی توضیح می‌دهم:»
+   و سپس پاسخ علمی و دقیق را بیان کن.`
     : `شما دستیار هوشمند و همه‌چیزدان آموزشی در اتاق مطالعه آنلاین «${roomName}» هستید.
-در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده است.
+در این اتاق فعلاً هیچ جزوه‌ای آپلود نشده یا هیچ بخش مرتبطی در جزوه‌ها یافت نشد.
 
 ${modeInstruction}
 
 با تمام عمق، تفکر و قدرت تحلیلی، علمی و استدلالی خود پاسخ کامل، دقیق، کاربردی و به زبان فارسی بسیار روان و ساختاریافته به دانشجو ارائه بده.`;
 
   let promptText = `دانشجو «${userName}» در اتاق مطالعه «${roomName}» سوال زیر را مطرح کرده است:\n«${question}»\n`;
-  if (hasPamphlets && pamphletContexts.length > 0) {
-    promptText += `\n\nمتن جزوات آپلود شده در این اتاق:\n${pamphletContexts.join('\n\n')}\n\nلطفاً پاسخ دهید:`;
+  if (hasPamphletContext) {
+    promptText += `\n\nبخش‌های مرتبط استخراج شده از جزوه‌های اتاق:\n${relevantContexts.join('\n\n')}\n\nلطفاً پاسخ را ارائه دهید:`;
   }
 
   inlineParts.push({ text: promptText });
@@ -1152,12 +1388,12 @@ ${modeInstruction}
   }
 
   const matchedSources = sources.filter(
-    (s) => answerText.includes(s) || (pamphlets.length > 0 && answerText.length > 40)
+    (s) => answerText.includes(s) || (relevantResults.length > 0 && answerText.length > 40)
   );
 
   return {
     text: answerText,
-    sources: matchedSources.length > 0 ? matchedSources : pamphlets.map((p) => p.name),
+    sources: matchedSources.length > 0 ? matchedSources : sources,
   };
 }
 
@@ -1481,6 +1717,21 @@ async function startServer() {
     } else {
       console.log('✓ Gemini AI initialized with server environment key.');
     }
+
+    // Auto-resume any interrupted large pamphlet processing jobs seamlessly
+    pamphletProcessor.resumePendingJobs((progress) => {
+      broadcastToRoom(progress.roomId, {
+        type: 'pamphlet-progress',
+        roomId: progress.roomId,
+        fileId: progress.fileId,
+        fileName: progress.fileName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    }, getGeminiClient());
   });
 }
 

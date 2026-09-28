@@ -277,6 +277,24 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     });
 
+    const unsubPamphletProgress = chatService.onPamphletProgress((progress) => {
+      setPamphlets((prev) =>
+        prev.map((item) => {
+          if (item.id === progress.fileId) {
+            return {
+              ...item,
+              status: progress.status,
+              processedPages: progress.current,
+              pagesCount: progress.total,
+              progressPercent: progress.percent,
+              error: progress.error,
+            };
+          }
+          return item;
+        })
+      );
+    });
+
     const unsubPresence = chatService.onPresenceUpdate((updatedMembers) => {
       setMembers(mapMembersToUsers(updatedMembers));
       setActiveRoom((prev) => (prev ? { ...prev, membersCount: updatedMembers.length } : null));
@@ -303,6 +321,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubAIHistory();
       unsubAIThinking();
       unsubPamphlet();
+      unsubPamphletProgress();
       unsubPresence();
       unsubStatus();
       unsubError();
@@ -693,45 +712,23 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     reader.readAsDataURL(file);
   };
 
-  // Upload room pamphlet (PDF, TXT, DOCX)
+  // Upload room pamphlet (PDF, TXT, DOCX) directly to backend
   const uploadPamphlet = async (file: File) => {
     if (!activeRoom) {
       showToast('ابتدا وارد اتاق شوید', 'error');
       return;
     }
 
-    const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
-    const formattedSize =
-      file.size < 1024 * 1024
-        ? `${(file.size / 1024).toFixed(0)} کیلوبایت`
-        : `${(file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
-
-    const reader = new FileReader();
-
-    reader.onload = async () => {
-      const content = reader.result as string;
-      const uploaded = await chatService.uploadPamphlet({
-        name: file.name,
-        size: formattedSize,
-        type: ext,
-        content,
-      });
-
+    try {
+      const uploaded = await chatService.uploadPamphletFile(file);
       if (uploaded) {
-        showToast(`جزوه «${file.name}» با موفقیت برای اتاق آپلود شد.`);
+        showToast(`جزوه «${file.name}» با موفقیت به سرور آپلود شد و پردازش صفحات آغاز گردید.`);
       } else {
-        showToast('خطا در آپلود جزوه', 'error');
+        showToast('خطا در آپلود جزوه به سرور', 'error');
       }
-    };
-
-    reader.onerror = () => {
-      showToast('خطا در خواندن فایل انتخاب شده', 'error');
-    };
-
-    if (file.type.includes('text') || file.name.endsWith('.txt')) {
-      reader.readAsText(file, 'utf-8');
-    } else {
-      reader.readAsDataURL(file);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'خطا در آپلود جزوه';
+      showToast(msg, 'error');
     }
   };
 

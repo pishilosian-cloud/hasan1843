@@ -370,7 +370,7 @@ app.post('/api/rooms', (req, res) => {
     roomId = generateUniqueRoomId();
   }
 
-  const nowStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  const nowStr = new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
 
   const hostMember: RoomMember = {
     id: ownerId || `user-${Date.now()}`,
@@ -447,7 +447,7 @@ app.post('/api/rooms/:roomId/join', (req, res) => {
     existingMember = {
       id: user.id,
       name: user.name,
-      joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      joinedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       isOnline: true,
       avatarBg: user.avatarBg || avatarGradients[room.members.length % avatarGradients.length],
       role: 'member',
@@ -553,7 +553,7 @@ async function processIncomingChatMessage(
   clientMode?: AIMode
 ): Promise<ChatMessage> {
   const now = new Date();
-  const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  const timeFormatted = now.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
 
   const userChatMessage: ChatMessage = {
     id: customMsgId || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -640,7 +640,7 @@ async function processIncomingChatMessage(
           senderName: '🤖 دستیار هوشمند AI',
           senderAvatarBg: 'from-purple-600 to-indigo-600',
           content: aiResponseText,
-          timestamp: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
           createdAt: new Date().toISOString(),
           isSelf: false,
           isAI: true,
@@ -655,7 +655,7 @@ async function processIncomingChatMessage(
           type: 'ai',
           sender: 'دستیار هوشمند AI',
           message: aiResponseText,
-          createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+          createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
           sources: aiSources,
           mode: effectiveMode,
         };
@@ -811,7 +811,7 @@ async function handleAIChatRequest(
     member = {
       id: userId,
       name: userName,
-      joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      joinedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       isOnline: true,
       avatarBg: userParam?.avatarBg || avatarGradients[0],
       role: 'member',
@@ -821,7 +821,7 @@ async function handleAIChatRequest(
   }
 
   const now = new Date();
-  const timeFormatted = now.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  const timeFormatted = now.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
 
   // 6. Create and save User's question
   const userMsg: AIMessage = {
@@ -875,7 +875,7 @@ async function handleAIChatRequest(
       type: 'ai',
       sender: 'دستیار هوشمند AI',
       message: aiAnswer.text,
-      createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       sources: aiAnswer.sources,
       mode: aiMode,
     };
@@ -907,7 +907,7 @@ async function handleAIChatRequest(
       type: 'ai',
       sender: 'دستیار هوشمند AI',
       message: fallbackText,
-      createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       mode: aiMode,
     };
 
@@ -1124,7 +1124,7 @@ app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (re
     size: formattedSize,
     type: ext,
     uploadedBy,
-    createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+    createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
     status: 'processing',
     processedPages: 0,
     progressPercent: 0,
@@ -1225,7 +1225,7 @@ app.post('/api/rooms/:roomId/pamphlets', async (req, res) => {
     size: size || '۱ مگابایت',
     type: ext,
     uploadedBy: (uploadedBy || 'کاربر').trim(),
-    createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+    createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
     status: 'processing',
     processedPages: 0,
     progressPercent: 0,
@@ -1423,6 +1423,12 @@ ${modeInstruction}
 ۳. بخش‌های مهم پاسخ را با استفاده از عناوین برجسته بولد شده (**مانند این**) از هم تفکیک کنید.
 ۴. فرمول‌ها، تعاریف اصلی و مفاهیم ریاضی/حسابداری را در خطوط کاملاً مجزا و با فواصل خالی بالا و پایین بنویسید تا به راحتی دیده شوند. از نوشتن متن‌های فشرده و به هم چسبیده اکیداً خودداری کنید.
 
+قوانین ارجاع‌دهی و ذکر صفحه و منبع در انتهای پاسخ (الزامی):
+شما باید در انتهای پاسخ خود به صورت کاملاً تفکیک‌شده و با تگ مشخص تایید کنید که این پاسخ از کدام صفحات از کدام جزوه برداشته شده است. قالب ارجاع در خط پایانی پاسخ شما باید دقیقاً به شکل زیر باشد (در صورتی که پاسخ برگرفته از جزوه است):
+
+📝 **منبع استخراج پاسخ:**
+- 📄 [نام فایل جزوه] (صفحه [شماره صفحه])
+
 قوانین سخت‌گیرانه پاسخگویی با استناد به جزوه:
 ۱. بخش‌های مرتبط استخراج شده از جزوه‌های این اتاق به همراه «شماره صفحه» و «نام جزوه» در اختیارتان قرار داده شده است.
 ۲. با ترکیب هوشمندانه تمام اطلاعات ارائه‌شده و با تفکر تحلیلی عمیق پاسخ دهید.
@@ -1593,7 +1599,7 @@ wss.on('connection', (ws: WebSocket) => {
           existingMember = {
             id: user.id,
             name: user.name,
-            joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+            joinedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
             isOnline: true,
             avatarBg: user.avatarBg || avatarGradients[room.members.length % avatarGradients.length],
             role: 'member',
@@ -1659,7 +1665,7 @@ wss.on('connection', (ws: WebSocket) => {
 
         const userName = msg.user?.name || 'دانشجو';
         const userId = msg.user?.id || `user-${Date.now()}`;
-        const timeFormatted = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+        const timeFormatted = new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
         const aiMode: AIMode = msg.mode === 'complex' ? 'complex' : 'simple';
 
         const userMsg: AIMessage = {
@@ -1701,7 +1707,7 @@ wss.on('connection', (ws: WebSocket) => {
             type: 'ai',
             sender: 'دستیار هوشمند AI',
             message: aiAnswer.text,
-            createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+            createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
             sources: aiAnswer.sources,
             mode: aiMode,
           };
@@ -1722,7 +1728,7 @@ wss.on('connection', (ws: WebSocket) => {
             type: 'ai',
             sender: 'دستیار هوشمند AI',
             message: 'فعلاً دستیار هوشمند در دسترس نیست. دوباره تلاش کن.',
-            createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+            createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
             mode: aiMode,
           };
           roomAIMessages.get(room.id)!.push(fallbackAiMsg);

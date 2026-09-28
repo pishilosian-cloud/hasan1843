@@ -97,6 +97,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [modalType, setModalType] = useState<ModalType>('none');
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingRoomCreation, setPendingRoomCreation] = useState<{ roomName: string; category?: string } | null>(null);
+  const justCreatedRoomIdRef = useRef<string | null>(null);
 
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
@@ -337,7 +338,16 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('join-room');
     } else if (urlRoomId) {
-      if (activeRoom && activeRoom.id.toUpperCase() === urlRoomId.toUpperCase()) {
+      const cleanUrlId = urlRoomId.trim().toUpperCase();
+
+      // If this room was just created in this tab, skip re-fetching/re-joining
+      if (justCreatedRoomIdRef.current === cleanUrlId) {
+        justCreatedRoomIdRef.current = null;
+        return;
+      }
+
+      // If activeRoom is already this room, do nothing
+      if (activeRoom && activeRoom.id.toUpperCase() === cleanUrlId) {
         return;
       }
 
@@ -347,62 +357,54 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setIsLoadingRoom(true);
         setRoomError(null);
 
-        let roomData = await roomService.getRoom(urlRoomId);
+        const roomData = await roomService.getRoom(cleanUrlId);
         if (isCancelled) return;
 
         if (!roomData) {
-          roomData = {
-            id: urlRoomId,
-            name: urlRoomId === 'MATH101' ? 'آمادگی کنکور - ریاضی تجربی' : `اتاق مطالعه ${urlRoomId}`,
-            category: urlRoomId === 'MATH101' ? 'ریاضیات' : 'عمومی',
-            createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-            ownerId: currentUser.id,
-            ownerName: currentUser.name || 'کاربر',
-            members: [
-              {
-                id: currentUser.id,
-                name: currentUser.name || 'کاربر',
-                joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-                isOnline: true,
-                avatarBg: currentUser.avatarBg,
-                role: 'member',
-              },
-            ],
-          };
-          fetch('/api/rooms/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ room: roomData }),
-          }).catch(() => {});
+          setIsLoadingRoom(false);
+          setActiveRoom(null);
+          setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
+          showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+          return;
         }
 
         setIsLoadingRoom(false);
 
-        setActiveRoom({
+        // Check if user has a name registered
+        const savedUserName = localStorage.getItem('studyroom_user_name') || currentUser.name;
+        if (!savedUserName || !savedUserName.trim()) {
+          setPendingRoomId(roomData.id);
+          setModalType('name-entry');
+          return;
+        }
+
+        const effectiveUser: User = {
+          ...currentUser,
+          name: savedUserName.trim(),
+          avatar: savedUserName.trim().charAt(0).toUpperCase(),
+        };
+
+        const targetRoomModel: Room = {
           id: roomData.id,
           name: roomData.name,
           category: roomData.category || 'عمومی',
           createdAt: roomData.createdAt,
           hostName: roomData.ownerName,
           membersCount: roomData.members?.length || 1,
-        });
+        };
 
+        setActiveRoom(targetRoomModel);
         if (roomData.members) {
           setMembers(mapMembersToUsers(roomData.members));
         }
 
-        if (!currentUser.name) {
-          setPendingRoomId(roomData.id);
-          setModalType('name-entry');
-        } else {
-          setModalType('none');
-          setIsLoadingMessages(true);
-          chatService.connectToRoom(roomData.id, {
-            id: currentUser.id,
-            name: currentUser.name,
-            avatarBg: currentUser.avatarBg,
-          });
-        }
+        setModalType('none');
+        setIsLoadingMessages(true);
+        chatService.connectToRoom(roomData.id, {
+          id: effectiveUser.id,
+          name: effectiveUser.name,
+          avatarBg: effectiveUser.avatarBg,
+        });
       };
 
       checkAndJoin();
@@ -442,37 +444,40 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
-    const targetRoomId = pendingRoomId || (activeRoom ? activeRoom.id : urlRoomId);
+    const targetRoomId = pendingRoomId || urlRoomId || (activeRoom ? activeRoom.id : null);
 
     setModalType('none');
     setPendingRoomId(null);
 
     if (targetRoomId) {
-      navigate(`/room/${targetRoomId}`);
+      const cleanTargetId = targetRoomId.toUpperCase();
+      navigate(`/room/${cleanTargetId}`);
 
-      if (!activeRoom || activeRoom.id !== targetRoomId) {
-        roomService.getRoom(targetRoomId).then((r) => {
-          if (r) {
-            setActiveRoom({
-              id: r.id,
-              name: r.name,
-              category: r.category || 'عمومی',
-              createdAt: r.createdAt,
-              hostName: r.ownerName,
-              membersCount: r.members?.length || 1,
-            });
-            if (r.members) setMembers(mapMembersToUsers(r.members));
-          }
+      roomService.getRoom(cleanTargetId).then((r) => {
+        if (!r) {
+          setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
+          showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+          return;
+        }
+
+        setActiveRoom({
+          id: r.id,
+          name: r.name,
+          category: r.category || 'عمومی',
+          createdAt: r.createdAt,
+          hostName: r.ownerName,
+          membersCount: r.members?.length || 1,
         });
-      }
+        if (r.members) setMembers(mapMembersToUsers(r.members));
 
-      setIsLoadingMessages(true);
-      chatService.connectToRoom(targetRoomId, {
-        id: updatedUser.id,
-        name: trimmed,
-        avatarBg: updatedUser.avatarBg,
+        setIsLoadingMessages(true);
+        chatService.connectToRoom(r.id, {
+          id: updatedUser.id,
+          name: trimmed,
+          avatarBg: updatedUser.avatarBg,
+        });
+        showToast(`ورود به اتاق «${r.name}» با موفقیت انجام شد.`);
       });
-      showToast(`ورود به اتاق با موفقیت انجام شد.`);
     } else if (activeRoom) {
       chatService.connectToRoom(activeRoom.id, {
         id: updatedUser.id,
@@ -483,24 +488,22 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const createRoom = async (roomName: string, category: string = 'عمومی', creatorName?: string) => {
-    let finalUserName = creatorName?.trim() || currentUser.name.trim();
+    const rawName = creatorName?.trim() || currentUser.name.trim();
 
-    if (!finalUserName) {
+    if (!rawName) {
       setPendingRoomCreation({ roomName, category });
       setModalType('name-entry');
       return;
     }
 
-    let userToUse = currentUser;
-    if (creatorName && creatorName.trim() !== currentUser.name) {
-      userToUse = {
-        ...currentUser,
-        name: creatorName.trim(),
-        avatar: creatorName.trim().charAt(0).toUpperCase(),
-      };
-      setCurrentUser(userToUse);
-      localStorage.setItem('studyroom_user_name', creatorName.trim());
-    }
+    const trimmedCreator = rawName.trim();
+    const updatedUser: User = {
+      ...currentUser,
+      name: trimmedCreator,
+      avatar: trimmedCreator.charAt(0).toUpperCase(),
+    };
+    setCurrentUser(updatedUser);
+    localStorage.setItem('studyroom_user_name', trimmedCreator);
 
     setIsLoadingRoom(true);
     setRoomError(null);
@@ -509,8 +512,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const newRoom = await roomService.createRoom(
         roomName.trim(),
         category,
-        userToUse.name,
-        userToUse.id
+        trimmedCreator,
+        updatedUser.id
       );
 
       const createdRoomModel: Room = {
@@ -522,6 +525,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         membersCount: newRoom.members?.length || 1,
       };
 
+      justCreatedRoomIdRef.current = newRoom.id.toUpperCase();
+
       setActiveRoom(createdRoomModel);
       if (newRoom.members) {
         setMembers(mapMembersToUsers(newRoom.members));
@@ -530,15 +535,16 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
       setModalType('none');
       setPendingRoomCreation(null);
+      setPendingRoomId(null);
 
       navigate(`/room/${newRoom.id}`);
-      showToast(`اتاق «${newRoom.name}» با کد ${newRoom.id} ساخته شد.`);
+      showToast(`اتاق «${newRoom.name}» با موفقیت ساخته شد.`);
 
-      setIsLoadingMessages(false);
+      setIsLoadingMessages(true);
       chatService.connectToRoom(newRoom.id, {
-        id: userToUse.id,
-        name: userToUse.name,
-        avatarBg: userToUse.avatarBg,
+        id: updatedUser.id,
+        name: updatedUser.name,
+        avatarBg: updatedUser.avatarBg,
       });
     } catch (err: unknown) {
       setIsLoadingRoom(false);
@@ -560,62 +566,41 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsLoadingRoom(true);
 
     try {
-      let roomData = await roomService.getRoom(cleanId);
-
-      // Auto-fallback/sync if room is not on server
-      if (!roomData) {
-        roomData = {
-          id: cleanId,
-          name: cleanId === 'MATH101' ? 'آمادگی کنکور - ریاضی تجربی' : `اتاق مطالعه ${cleanId}`,
-          category: cleanId === 'MATH101' ? 'ریاضیات' : 'عمومی',
-          createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-          ownerId: currentUser.id,
-          ownerName: currentUser.name || 'کاربر',
-          members: [
-            {
-              id: currentUser.id,
-              name: currentUser.name || 'کاربر',
-              joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-              isOnline: true,
-              avatarBg: currentUser.avatarBg,
-              role: 'member',
-            },
-          ],
-        };
-        fetch('/api/rooms/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ room: roomData }),
-        }).catch(() => {});
-      }
-
+      const roomData = await roomService.getRoom(cleanId);
       setIsLoadingRoom(false);
 
-      const targetRoomModel: Room = {
-        id: roomData.id,
-        name: roomData.name,
-        category: roomData.category || 'عمومی',
-        createdAt: roomData.createdAt,
-        hostName: roomData.ownerName,
-        membersCount: roomData.members?.length || 1,
-      };
-
-      setActiveRoom(targetRoomModel);
-      if (roomData.members) {
-        setMembers(mapMembersToUsers(roomData.members));
+      if (!roomData) {
+        setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
+        showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+        return;
       }
 
       setModalType('none');
       navigate(`/room/${roomData.id}`);
 
-      if (!currentUser.name) {
+      const savedUserName = localStorage.getItem('studyroom_user_name') || currentUser.name;
+      if (!savedUserName || !savedUserName.trim()) {
         setPendingRoomId(roomData.id);
         setModalType('name-entry');
       } else {
+        const targetRoomModel: Room = {
+          id: roomData.id,
+          name: roomData.name,
+          category: roomData.category || 'عمومی',
+          createdAt: roomData.createdAt,
+          hostName: roomData.ownerName,
+          membersCount: roomData.members?.length || 1,
+        };
+
+        setActiveRoom(targetRoomModel);
+        if (roomData.members) {
+          setMembers(mapMembersToUsers(roomData.members));
+        }
+
         setIsLoadingMessages(true);
         chatService.connectToRoom(roomData.id, {
           id: currentUser.id,
-          name: currentUser.name,
+          name: savedUserName.trim(),
           avatarBg: currentUser.avatarBg,
         });
         showToast(`ورود به اتاق «${roomData.name}» انجام شد.`);

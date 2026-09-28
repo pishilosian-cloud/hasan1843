@@ -12,6 +12,13 @@ export const NameEntryModal: React.FC = () => {
 
   const isOpen = modalType === 'name-entry';
 
+  React.useEffect(() => {
+    if (isOpen) {
+      setName(currentUser.name || '');
+      setError('');
+    }
+  }, [isOpen, currentUser.name]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {

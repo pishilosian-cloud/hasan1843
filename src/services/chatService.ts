@@ -99,7 +99,7 @@ class ChatService {
   }
 
   private getWebSocketUrl(): string {
-    if (typeof window === 'undefined') return 'ws://localhost:3000/ws';
+    if (typeof window === 'undefined') return '';
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws`;
   }

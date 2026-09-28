@@ -345,6 +345,14 @@ app.get('/api/rooms/:roomId', (req, res) => {
   res.json(room);
 });
 
+app.get('/api/rooms/:roomId/members', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
+  }
+  res.json(room.members || []);
+});
+
 app.post('/api/rooms', (req, res) => {
   const { name, category = 'عمومی', ownerName, ownerId, customId } = req.body;
   if (!name || typeof name !== 'string' || !name.trim()) {

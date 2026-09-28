@@ -108,5 +108,53 @@
         "role": "host"
       }
     ]
+  },
+  "WXK7XS": {
+    "id": "WXK7XS",
+    "name": "نن",
+    "category": "حسابداری و مدیریت",
+    "createdAt": "۰۹:۴۹",
+    "ownerId": "user-4222",
+    "ownerName": "س",
+    "members": [
+      {
+        "id": "user-4222",
+        "name": "س",
+        "joinedAt": "۰۹:۴۹",
+        "isOnline": true,
+        "avatarBg": "from-indigo-500 to-purple-600",
+        "role": "host"
+      }
+    ],
+    "meetUrl": "https://meet.google.com/new",
+    "meetCode": "google-meet",
+    "meetCreatorName": "س",
+    "meetStartedAt": "۰۹:۵۰"
+  },
+  "ZVBDMT": {
+    "id": "ZVBDMT",
+    "name": "اتاق آزمایشی کلودفلر",
+    "category": "برنامه‌نویسی",
+    "createdAt": "۱۰:۲۴",
+    "ownerId": "user-t1",
+    "ownerName": "تستر ۱",
+    "members": [
+      {
+        "id": "user-t1",
+        "name": "تستر ۱",
+        "joinedAt": "۱۰:۲۴",
+        "isOnline": true,
+        "avatarBg": "from-indigo-500 to-purple-600",
+        "role": "host"
+      },
+      {
+        "id": "user-t2",
+        "name": "کاربر دوم آزمایشی",
+        "joinedAt": "۱۰:۲۵",
+        "isOnline": true,
+        "avatarBg": "from-emerald-500 to-teal-600",
+        "role": "member"
+      }
+    ]
   }
 }

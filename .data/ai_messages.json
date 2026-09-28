@@ -75,5 +75,29 @@
       "sources": [],
       "mode": "simple"
     }
+  ],
+  "WXK7XS": [],
+  "ZVBDMT": [
+    {
+      "id": "aimsg-1790591118249-u",
+      "roomId": "ZVBDMT",
+      "type": "user",
+      "sender": "تستر ۱",
+      "senderId": "user-t1",
+      "senderAvatarBg": "from-indigo-500 to-purple-600",
+      "message": "۲ ضربدر ۳ چند میشه؟ خیلی کوتاه جواب بده",
+      "createdAt": "۱۰:۲۵",
+      "mode": "simple"
+    },
+    {
+      "id": "aimsg-1790591121065-ai",
+      "roomId": "ZVBDMT",
+      "type": "ai",
+      "sender": "دستیار هوشمند AI",
+      "message": "حاصل ضرب ۲ در ۳ برابر است با:\n\n**۶** (شش)",
+      "createdAt": "۱۰:۲۵",
+      "sources": [],
+      "mode": "simple"
+    }
   ]
 }

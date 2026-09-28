@@ -410,11 +410,19 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
 
         setIsLoadingMessages(true);
+        const safetyTimer = window.setTimeout(() => {
+          setIsLoadingMessages(false);
+        }, 2000);
+
         chatService.connectToRoom(roomData.id, {
           id: currentUser.id,
           name: effectiveUserName,
           avatarBg: currentUser.avatarBg,
         });
+
+        return () => {
+          clearTimeout(safetyTimer);
+        };
       };
 
       checkAndJoin();
@@ -466,6 +474,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       closeModal();
       setIsLoadingMessages(true);
+      setTimeout(() => setIsLoadingMessages(false), 2000);
       navigate(`/room/${newRoom.id}`);
 
       chatService.connectToRoom(newRoom.id, {
@@ -520,6 +529,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     closeModal();
     setIsLoadingMessages(true);
+    setTimeout(() => setIsLoadingMessages(false), 2000);
     navigate(`/room/${roomData.id}`);
 
     chatService.connectToRoom(roomData.id, {

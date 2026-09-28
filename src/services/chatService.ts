@@ -47,7 +47,6 @@ class ChatService {
 
   private cachedAIMsgCount = 0;
   private cachedLastAIMsgId = '';
-  private cachedMessagesCount = 0;
 
   private messageListeners = new Set<MessageHandler>();
   private presenceListeners = new Set<PresenceHandler>();
@@ -67,79 +66,21 @@ class ChatService {
     }
   }
 
-  /**
-   * Connect to room with Dual-Transport Architecture:
-   * 1. Immediate REST API hydration so room loads within milliseconds
-   * 2. Real-time WebSocket connection for low-latency P2P & live updates
-   * 3. Background delta polling for 100% reliability on Cloudflare / Edge networks
-   */
-  public async connectToRoom(
+  public connectToRoom(
     roomId: string,
     user: { id: string; name: string; avatarBg?: string }
   ) {
+    if (this.currentRoomId === roomId && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+
     this.intentionalDisconnect = false;
     this.currentRoomId = roomId;
     this.currentUser = user;
     this.reconnectAttempts = 0;
 
-    console.log(`[ChatService] Connecting to room ${roomId} for user ${user.name}`);
-
-    // Immediately mark as connected so UI is fully active and never blocked
-    this.updateStatus('connected');
-
-    // 1. Immediately hydrate via REST API so room loads within milliseconds
-    this.hydrateRoomState(roomId, user);
-
-    // 2. Setup WebSocket for live real-time bidirectional traffic
     this.setupWebSocket();
-
-    // 3. Start background sync polling to guarantee zero lost messages on any network
     this.startStatePolling();
-  }
-
-  private async hydrateRoomState(
-    roomId: string,
-    user: { id: string; name: string; avatarBg?: string }
-  ) {
-    try {
-      const res = await fetch(`/api/rooms/${roomId}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user }),
-      });
-
-      if (res.ok && this.currentRoomId === roomId) {
-        const data = await res.json();
-        console.log(`[ChatService] Room ${roomId} hydrated via HTTP successfully`);
-
-        this.cachedAIMsgCount = data.aiMessages?.length || 0;
-        this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
-        this.cachedMessagesCount = data.messages?.length || 0;
-
-        this.initListeners.forEach((fn) =>
-          fn({
-            room: data.room,
-            messages: data.messages || [],
-            members: data.members || [],
-            aiMessages: data.aiMessages || [],
-            pamphlets: data.pamphlets || [],
-            voiceParticipants: data.voiceParticipants || [],
-          })
-        );
-
-        if (data.members && Array.isArray(data.members)) {
-          this.presenceListeners.forEach((fn) => fn(data.members));
-        }
-
-        if (data.voiceParticipants) {
-          this.voiceParticipantsListeners.forEach((fn) => fn(data.voiceParticipants));
-        }
-
-        this.updateStatus('connected');
-      }
-    } catch (err) {
-      console.warn('[ChatService] Initial HTTP join fallback check:', err);
-    }
   }
 
   public leaveRoom() {
@@ -190,15 +131,6 @@ class ChatService {
           this.presenceListeners.forEach((fn) => fn(data.members));
         }
 
-        if (data.messages && Array.isArray(data.messages)) {
-          if (data.messages.length !== this.cachedMessagesCount) {
-            this.cachedMessagesCount = data.messages.length;
-            data.messages.forEach((msg: ChatMessage) => {
-              this.messageListeners.forEach((fn) => fn(msg));
-            });
-          }
-        }
-
         if (data.aiThinking) {
           this.aiThinkingListeners.forEach((fn) => fn(data.aiThinking));
         }
@@ -212,12 +144,6 @@ class ChatService {
             this.cachedLastAIMsgId = serverLastId;
             this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
           }
-        }
-
-        if (data.pamphlets && Array.isArray(data.pamphlets)) {
-          data.pamphlets.forEach((p: PamphletFile) => {
-            this.pamphletListeners.forEach((fn) => fn(p));
-          });
         }
       } catch {
         // ignore transient poll errors
@@ -242,16 +168,16 @@ class ChatService {
       this.ws = null;
     }
 
+    this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
       const wsUrl = `${protocol}//${host}/ws`;
 
-      console.log(`[ChatService] Initiating WebSocket to ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[ChatService] WebSocket connected successfully');
         this.isWsHealthy = true;
         this.reconnectAttempts = 0;
         this.updateStatus('connected');
@@ -279,8 +205,6 @@ class ChatService {
             if (data.roomId === this.currentRoomId) {
               this.cachedAIMsgCount = data.aiMessages?.length || 0;
               this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
-              this.cachedMessagesCount = data.messages?.length || 0;
-
               this.initListeners.forEach((fn) =>
                 fn({
                   room: data.room,
@@ -301,7 +225,6 @@ class ChatService {
 
           if (data.type === 'new-message') {
             if (data.roomId === this.currentRoomId) {
-              this.cachedMessagesCount++;
               this.messageListeners.forEach((fn) => fn(data.message));
             }
             return;
@@ -383,6 +306,13 @@ class ChatService {
             return;
           }
 
+          if (data.type === 'voice-speaking') {
+            if (data.roomId === this.currentRoomId) {
+              // handoff to context / listeners
+            }
+            return;
+          }
+
           if (data.type === 'error') {
             this.errorListeners.forEach((fn) => fn(data.message));
             return;
@@ -400,8 +330,7 @@ class ChatService {
         }
       };
 
-      this.ws.onerror = (err) => {
-        console.warn('[ChatService] WebSocket notice (switching to resilient transport):', err);
+      this.ws.onerror = () => {
         this.isWsHealthy = false;
         this.stopHeartbeat();
       };
@@ -417,12 +346,15 @@ class ChatService {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = Math.min(2000 * this.reconnectAttempts, 10000);
+      this.updateStatus('reconnecting');
 
       this.reconnectTimer = window.setTimeout(() => {
         if (!this.intentionalDisconnect && this.currentRoomId && this.currentUser) {
           this.setupWebSocket();
         }
       }, delay);
+    } else {
+      this.updateStatus('disconnected');
     }
   }
 

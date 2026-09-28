@@ -333,14 +333,13 @@ app.get('/api/rooms/:roomId', (req, res) => {
 });
 
 app.post('/api/rooms', (req, res) => {
-  const { name, category = 'عمومی', ownerName, ownerId, customId, id } = req.body;
+  const { name, category = 'عمومی', ownerName, ownerId, customId } = req.body;
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'نام اتاق الزامی است' });
   }
 
-  const requestedId = (customId || id || '').toString().trim();
-  let roomId = requestedId ? normalizeRoomId(requestedId) : generateUniqueRoomId();
-  if (!roomId || (rooms.has(roomId) && !requestedId)) {
+  let roomId = customId ? normalizeRoomId(customId) : generateUniqueRoomId();
+  if (!roomId || rooms.has(roomId)) {
     roomId = generateUniqueRoomId();
   }
 

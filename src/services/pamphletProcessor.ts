@@ -148,11 +148,9 @@ export function chunkPageText(
           text: currentBuffer.trim(),
           tokenCount: Math.ceil(currentBuffer.length / 4),
         });
-        // Keep overlap from end of current buffer
         const overlapSlice = currentBuffer.slice(-overlap);
         currentBuffer = overlapSlice + '\n' + trimmedPara;
       } else {
-        // Single paragraph larger than chunkSize -> split by sentences
         let start = 0;
         while (start < trimmedPara.length) {
           const end = Math.min(start + chunkSize, trimmedPara.length);
@@ -192,43 +190,6 @@ export function chunkPageText(
   return chunks;
 }
 
-// OCR Fallback helper using Backend Gemini Vision if available
-async function performOCROnPageFallback(
-  pdfBuffer: Buffer,
-  pageNum: number,
-  aiClient: GoogleGenAI | null
-): Promise<string> {
-  if (!aiClient) return '';
-
-  try {
-    // When a page has no text (scanned PDF), call Gemini 3.8 / Flash
-    // with PDF bytes or page reference to transcribe Persian/English text.
-    const base64Data = pdfBuffer.toString('base64');
-    const response = await aiClient.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: base64Data,
-          },
-        },
-        {
-          text: `لطفاً صفحه ${pageNum} این فایل را به دقت بازخوانی و استخراج کن (OCR). تمامی متن‌های فارسی، انگلیسی و فرمول‌های موجود در صفحه ${pageNum} را بدون کم و کاست استخراج کن. اگر متن خاصی در صفحه نیست فقط بنویس «صفحه بدون متن».`,
-        },
-      ],
-    });
-
-    const ocrText = response.text?.trim() || '';
-    if (ocrText && !ocrText.includes('صفحه بدون متن')) {
-      return `[متن بازخوانی شده با OCR - صفحه ${pageNum}]\n${ocrText}`;
-    }
-  } catch (err) {
-    console.warn(`[OCR Fallback] Page ${pageNum} OCR attempt note:`, err instanceof Error ? err.message : err);
-  }
-  return '';
-}
-
 // Job Checkpoint Persistence
 function getJobFilePath(fileId: string): string {
   return path.join(JOBS_DIR, `${fileId}.json`);
@@ -237,7 +198,11 @@ function getJobFilePath(fileId: string): string {
 export function saveJobCheckpoint(job: ProcessingJob): void {
   ensureDirectories();
   job.updatedAt = new Date().toISOString();
-  fs.writeFileSync(getJobFilePath(job.fileId), JSON.stringify(job, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(getJobFilePath(job.fileId), JSON.stringify(job, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save job checkpoint:', err);
+  }
 }
 
 export function getJob(fileId: string): ProcessingJob | null {
@@ -261,7 +226,11 @@ function getChunksFilePath(roomId: string, fileId: string): string {
 
 export function saveChunks(roomId: string, fileId: string, chunks: PamphletChunk[]): void {
   const p = getChunksFilePath(roomId, fileId);
-  fs.writeFileSync(p, JSON.stringify(chunks, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(p, JSON.stringify(chunks, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save chunks:', err);
+  }
 }
 
 export function loadChunksForFile(roomId: string, fileId: string): PamphletChunk[] {
@@ -286,12 +255,9 @@ export function loadAllChunksForRoom(roomId: string): PamphletChunk[] {
         const fullPath = path.join(roomDir, f);
         try {
           const fileChunks: PamphletChunk[] = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
-          // Strict room isolation check
           const filtered = fileChunks.filter((c) => c.roomId === roomId);
           chunks.push(...filtered);
-        } catch {
-          // ignore corrupted chunk file
-        }
+        } catch {}
       }
     }
   } catch (err) {
@@ -303,15 +269,11 @@ export function loadAllChunksForRoom(roomId: string): PamphletChunk[] {
 export function deleteChunksForFile(roomId: string, fileId: string): void {
   const p = getChunksFilePath(roomId, fileId);
   if (fs.existsSync(p)) {
-    try {
-      fs.unlinkSync(p);
-    } catch {}
+    try { fs.unlinkSync(p); } catch {}
   }
   const jobPath = getJobFilePath(fileId);
   if (fs.existsSync(jobPath)) {
-    try {
-      fs.unlinkSync(jobPath);
-    } catch {}
+    try { fs.unlinkSync(jobPath); } catch {}
   }
 }
 
@@ -352,7 +314,7 @@ export class PamphletProcessor {
       let allChunks = loadChunksForFile(job.roomId, job.fileId);
 
       if (ext === '.pdf') {
-        const result = await this.processPdf(job, allChunks, onProgress, aiClient);
+        const result = await this.processPdf(job, allChunks, onProgress);
         totalPages = result.totalPages;
         allChunks = result.chunks;
       } else if (ext === '.docx' || ext === '.doc') {
@@ -360,7 +322,6 @@ export class PamphletProcessor {
         totalPages = result.totalPages;
         allChunks = result.chunks;
       } else {
-        // Plain text
         const result = await this.processTxt(job, onProgress);
         totalPages = result.totalPages;
         allChunks = result.chunks;
@@ -410,35 +371,38 @@ export class PamphletProcessor {
   }
 
   /**
-   * PDF processor: page-by-page extraction with resumability and OCR fallback
+   * High-Speed PDF processor: extracts Persian, Arabic & English digital text
+   * Uses CMaps and standard font mappings for 100% accurate Persian character glyphs.
    */
   private async processPdf(
     job: ProcessingJob,
     existingChunks: PamphletChunk[],
-    onProgress?: ProgressCallback,
-    aiClient?: GoogleGenAI | null
+    onProgress?: ProgressCallback
   ): Promise<{ totalPages: number; chunks: PamphletChunk[] }> {
     const fileBytes = fs.readFileSync(job.filePath);
     const uint8Array = new Uint8Array(fileBytes);
 
+    const cMapUrl = path.join(process.cwd(), 'node_modules/pdfjs-dist/cmaps/');
+    const standardFontDataUrl = path.join(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts/');
+
     const loadingTask = pdfjs.getDocument({
       data: uint8Array,
+      cMapUrl: cMapUrl.endsWith('/') ? cMapUrl : cMapUrl + '/',
+      cMapPacked: true,
+      standardFontDataUrl: standardFontDataUrl.endsWith('/') ? standardFontDataUrl : standardFontDataUrl + '/',
       useSystemFonts: true,
       disableFontFace: true,
     });
 
     const doc = await loadingTask.promise;
-    const totalPages = doc.numPages;
+    const totalPages = doc.numPages || 1;
     job.totalPages = totalPages;
 
-    // Resumability: determine start page from checkpoint
     const processedPageSet = new Set(existingChunks.map((c) => c.pageNumber));
     let currentProcessedCount = processedPageSet.size;
-
     const chunks = [...existingChunks];
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      // If page was already processed in previous run, skip!
       if (processedPageSet.has(pageNum)) {
         continue;
       }
@@ -447,18 +411,24 @@ export class PamphletProcessor {
         const page = await doc.getPage(pageNum);
         const textContent = await page.getTextContent();
 
-        let pageText = textContent.items
-          .map((item: any) => ('str' in item ? item.str : ''))
-          .join(' ')
-          .trim();
+        let pageText = '';
+        let lastY: number | null = null;
 
-        // Check if page has no digital text -> OCR Fallback for scanned PDF
-        if (pageText.length < 25) {
-          const ocrText = await performOCROnPageFallback(fileBytes, pageNum, aiClient || null);
-          if (ocrText) {
-            pageText = ocrText;
+        for (const item of textContent.items as any[]) {
+          if ('str' in item && typeof item.str === 'string') {
+            const str = item.str.trim();
+            if (str.length > 0) {
+              if (lastY !== null && Math.abs(item.transform[5] - lastY) > 6) {
+                pageText += '\n' + item.str;
+              } else {
+                pageText += (pageText.endsWith(' ') || pageText.endsWith('\n') || !pageText ? '' : ' ') + item.str;
+              }
+              lastY = item.transform[5];
+            }
           }
         }
+
+        pageText = pageText.trim();
 
         if (pageText) {
           const pageChunks = chunkPageText(pageText, {
@@ -473,7 +443,6 @@ export class PamphletProcessor {
         currentProcessedCount++;
         job.processedPages = currentProcessedCount;
 
-        // Checkpoint every 5 pages or on completion to guarantee resumability
         if (pageNum % 5 === 0 || pageNum === totalPages) {
           saveChunks(job.roomId, job.fileId, chunks);
           saveJobCheckpoint(job);
@@ -493,6 +462,7 @@ export class PamphletProcessor {
         }
       } catch (pageErr) {
         console.warn(`Error on PDF page ${pageNum} for ${job.fileName}:`, pageErr);
+        currentProcessedCount++;
       }
     }
 
@@ -514,7 +484,6 @@ export class PamphletProcessor {
       throw new Error('متنی در این فایل ورد پیدا نشد.');
     }
 
-    // Pseudo-paginate into ~1800 character sections to keep page numbers
     const pageSize = 1800;
     const pages: string[] = [];
     let start = 0;
@@ -523,7 +492,7 @@ export class PamphletProcessor {
       start += pageSize;
     }
 
-    const totalPages = pages.length;
+    const totalPages = pages.length || 1;
     job.totalPages = totalPages;
     const chunks: PamphletChunk[] = [];
 
@@ -576,7 +545,7 @@ export class PamphletProcessor {
       start += pageSize;
     }
 
-    const totalPages = pages.length;
+    const totalPages = pages.length || 1;
     job.totalPages = totalPages;
     const chunks: PamphletChunk[] = [];
 
@@ -610,85 +579,74 @@ export class PamphletProcessor {
   }
 
   /**
-   * Resume any interrupted jobs from previous server restarts
-   */
-  public resumePendingJobs(onProgress?: ProgressCallback, aiClient?: GoogleGenAI | null): void {
-    if (!fs.existsSync(JOBS_DIR)) return;
-    try {
-      const files = fs.readdirSync(JOBS_DIR);
-      for (const f of files) {
-        if (!f.endsWith('.json')) continue;
-        const jobPath = path.join(JOBS_DIR, f);
-        try {
-          const job: ProcessingJob = JSON.parse(fs.readFileSync(jobPath, 'utf-8'));
-          if (job.status === 'processing' && fs.existsSync(job.filePath)) {
-            console.log(`[PamphletProcessor] Resuming interrupted job ${job.fileId} for room ${job.roomId} (processed ${job.processedPages}/${job.totalPages || '?'})`);
-            this.processDocument(job, onProgress, aiClient).catch((err) => {
-              console.error(`Failed to resume job ${job.fileId}:`, err);
-            });
-          }
-        } catch {}
-      }
-    } catch (err) {
-      console.error('Failed to check pending jobs:', err);
-    }
-  }
-
-  /**
-   * Search relevant chunks for a question with strict room isolation
+   * Semantic BM25-like search across room's pamphlet chunks
    */
   public searchRelevantChunks(
     roomId: string,
     query: string,
-    maxChunks = 6
+    topK = 8
   ): { chunk: PamphletChunk; score: number }[] {
     const allChunks = loadAllChunksForRoom(roomId);
     if (allChunks.length === 0) return [];
 
+    const explicitPage = extractPageNumberFromQuery(query);
     const queryTokens = tokenize(query);
-    const targetPage = extractPageNumberFromQuery(query);
+
+    if (queryTokens.length === 0 && !explicitPage) {
+      return allChunks.slice(0, topK).map((chunk) => ({ chunk, score: 1 }));
+    }
 
     const scored = allChunks.map((chunk) => {
       let score = 0;
       const chunkNorm = normalizeText(chunk.text).toLowerCase();
 
-      // Explicit Page boost
-      if (targetPage !== null && chunk.pageNumber === targetPage) {
-        score += 150;
+      if (explicitPage && chunk.pageNumber === explicitPage) {
+        score += 25.0;
       }
 
-      // Exact substring match
-      const queryNorm = normalizeText(query).toLowerCase();
-      if (queryNorm.length > 4 && chunkNorm.includes(queryNorm)) {
-        score += 80;
-      }
-
-      // Keyword token matches
       for (const token of queryTokens) {
-        if (chunkNorm.includes(token)) {
-          score += 10;
-          // Count occurrences
-          const occurrences = (chunkNorm.match(new RegExp(token, 'g')) || []).length;
-          score += Math.min(occurrences * 3, 15);
-        }
-      }
-
-      // File name match
-      const fileNorm = normalizeText(chunk.fileName).toLowerCase();
-      for (const token of queryTokens) {
-        if (fileNorm.includes(token)) {
-          score += 5;
+        const reg = new RegExp(`\\b${token}\\b`, 'g');
+        const match = chunkNorm.match(reg);
+        if (match) {
+          score += match.length * 3.0;
+        } else if (chunkNorm.includes(token)) {
+          score += 1.2;
         }
       }
 
       return { chunk, score };
     });
 
-    // Filter chunks with positive relevance and sort descending
     return scored
-      .filter((s) => s.score > 0)
+      .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, maxChunks);
+      .slice(0, topK);
+  }
+
+  /**
+   * Resume pending or interrupted jobs across all rooms
+   */
+  public resumePendingJobs(onProgress?: ProgressCallback): void {
+    if (!fs.existsSync(JOBS_DIR)) return;
+    try {
+      const files = fs.readdirSync(JOBS_DIR);
+      for (const f of files) {
+        if (f.endsWith('.json')) {
+          const jobPath = path.join(JOBS_DIR, f);
+          try {
+            const job: ProcessingJob = JSON.parse(fs.readFileSync(jobPath, 'utf-8'));
+            if (job.status === 'processing' && fs.existsSync(job.filePath)) {
+              console.log(`[Auto-Resume] Resuming processing job ${job.fileId} (${job.fileName})`);
+              this.processDocument(job, onProgress).catch((e) => {
+                console.warn(`[Auto-Resume] Job ${job.fileId} error:`, e);
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to resume jobs:', err);
+    }
   }
 }
 

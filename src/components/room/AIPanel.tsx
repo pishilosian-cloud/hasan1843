@@ -23,6 +23,7 @@ export const AIPanel: React.FC = () => {
     sendAIQuestion,
     sendAIVision,
     pamphlets = [],
+    uploadProgress,
     uploadPamphlet,
     isAskingAI = false,
     aiMode = 'simple',
@@ -222,6 +223,34 @@ export const AIPanel: React.FC = () => {
             </>
           )}
         </button>
+
+        {/* Live Fast Upload Progress Card */}
+        {uploadProgress && uploadProgress.isUploading && (
+          <div className="mt-2 p-2.5 rounded-xl bg-indigo-50/90 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-[11px] shadow-xs animate-in fade-in duration-150">
+            <div className="flex items-center justify-between mb-1.5 font-bold">
+              <span className="flex items-center gap-1.5 text-indigo-700 dark:text-indigo-300 truncate max-w-[180px]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
+                <span className="truncate">{uploadProgress.fileName}</span>
+              </span>
+              <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
+                {uploadProgress.percent}٪
+              </span>
+            </div>
+
+            {/* Glowing Progress Track */}
+            <div className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden mb-1">
+              <div
+                className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500 rounded-full transition-all duration-150"
+                style={{ width: `${Math.max(4, uploadProgress.percent)}%` }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+              <span>{uploadProgress.loadedFormatted} از {uploadProgress.totalFormatted}</span>
+              <span className="font-mono text-indigo-600 dark:text-indigo-400">{uploadProgress.speedText}</span>
+            </div>
+          </div>
+        )}
 
         {/* Pamphlet List & Live Processing Progress */}
         {safePamphlets.length > 0 && (

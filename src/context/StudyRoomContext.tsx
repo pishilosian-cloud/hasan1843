@@ -16,6 +16,15 @@ import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
 
+export interface UploadProgressState {
+  isUploading: boolean;
+  fileName: string;
+  percent: number;
+  loadedFormatted: string;
+  totalFormatted: string;
+  speedText: string;
+}
+
 interface StudyRoomContextType {
   currentUser: User;
   setUserName: (name: string) => void;
@@ -29,6 +38,7 @@ interface StudyRoomContextType {
   messages: ChatMessage[];
   aiMessages: AIMessage[];
   pamphlets: PamphletFile[];
+  uploadProgress: UploadProgressState | null;
   isAskingAI: boolean;
   aiMode: AIMode;
   setAiMode: (mode: AIMode) => void;
@@ -115,6 +125,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [aiMessages, setAiMessages] = useState<AIMessage[]>([]);
   const [pamphlets, setPamphlets] = useState<PamphletFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
 
   const [voiceState, setVoiceState] = useState<VoiceState>({
     isCallActive: false,
@@ -704,16 +715,49 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
+    const totalFormatted =
+      file.size < 1024 * 1024
+        ? `${(file.size / 1024).toFixed(0)} کیلوبایت`
+        : `${(file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+    setUploadProgress({
+      isUploading: true,
+      fileName: file.name,
+      percent: 0,
+      loadedFormatted: '۰ کیلوبایت',
+      totalFormatted,
+      speedText: 'در حال شروع...',
+    });
+
     try {
-      const uploaded = await chatService.uploadPamphletFile(file);
+      const uploaded = await chatService.uploadPamphletFile(file, (p) => {
+        const loadedFormatted =
+          p.loaded < 1024 * 1024
+            ? `${(p.loaded / 1024).toFixed(0)} کیلوبایت`
+            : `${(p.loaded / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+        setUploadProgress({
+          isUploading: true,
+          fileName: file.name,
+          percent: p.percent,
+          loadedFormatted,
+          totalFormatted,
+          speedText: p.speedText,
+        });
+      });
+
       if (uploaded) {
-        showToast(`جزوه «${file.name}» با موفقیت به سرور آپلود شد و پردازش صفحات آغاز گردید.`);
+        showToast(`جزوه «${file.name}» با موفقیت آپلود شد و پردازش صفحات آغاز گردید.`);
       } else {
         showToast('خطا در آپلود جزوه به سرور', 'error');
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'خطا در آپلود جزوه';
       showToast(msg, 'error');
+    } finally {
+      setTimeout(() => {
+        setUploadProgress(null);
+      }, 600);
     }
   };
 
@@ -807,6 +851,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         messages,
         aiMessages,
         pamphlets,
+        uploadProgress,
         isAskingAI,
         aiMode,
         setAiMode,

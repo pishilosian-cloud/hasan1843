@@ -1739,7 +1739,7 @@ async function startServer() {
         percent: progress.percent,
         error: progress.error,
       });
-    }, getGeminiClient());
+    });
   });
 }
 

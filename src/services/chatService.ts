@@ -556,31 +556,73 @@ class ChatService {
     return () => this.pamphletProgressListeners.delete(fn);
   }
 
-  public async uploadPamphletFile(file: File): Promise<PamphletFile | null> {
-    if (!this.currentRoomId || !this.currentUser) return null;
+  public uploadPamphletFile(
+    file: File,
+    onProgress?: (progress: { loaded: number; total: number; percent: number; speedText: string }) => void
+  ): Promise<PamphletFile | null> {
+    if (!this.currentRoomId || !this.currentUser) return Promise.resolve(null);
 
-    try {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const startTime = Date.now();
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+          const elapsedSec = (Date.now() - startTime) / 1000;
+          const speedBps = elapsedSec > 0 ? e.loaded / elapsedSec : 0;
+          const speedText =
+            speedBps > 1024 * 1024
+              ? `${(speedBps / (1024 * 1024)).toFixed(1)} مگابایت/ثانیه`
+              : `${(speedBps / 1024).toFixed(0)} کیلوبایت/ثانیه`;
+
+          onProgress({
+            loaded: e.loaded,
+            total: e.total,
+            percent,
+            speedText,
+          });
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const created: PamphletFile = JSON.parse(xhr.responseText);
+            this.pamphletListeners.forEach((fn) => fn(created));
+            if (onProgress) {
+              onProgress({
+                loaded: file.size,
+                total: file.size,
+                percent: 100,
+                speedText: 'تکمیل شد',
+              });
+            }
+            resolve(created);
+          } catch {
+            reject(new Error('خطا در پردازش پاسخ سرور'));
+          }
+        } else {
+          try {
+            const err = JSON.parse(xhr.responseText);
+            reject(new Error(err.error || 'خطا در آپلود جزوه به سرور'));
+          } catch {
+            reject(new Error(`خطای سرور (${xhr.status})`));
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('خطای اتصال به سرور در هنگام آپلود جزوه'));
+      };
+
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('uploadedBy', this.currentUser.name || 'کاربر');
+      formData.append('uploadedBy', this.currentUser?.name || 'کاربر');
 
-      const res = await fetch(`/api/rooms/${this.currentRoomId}/pamphlets/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (res.ok) {
-        const created: PamphletFile = await res.json();
-        this.pamphletListeners.forEach((fn) => fn(created));
-        return created;
-      } else {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'خطا در آپلود جزوه به سرور');
-      }
-    } catch (err) {
-      console.warn('Direct multipart upload failed, using fallback reader:', err);
-      return this.uploadPamphletFallback(file);
-    }
+      xhr.open('POST', `/api/rooms/${this.currentRoomId}/pamphlets/upload`);
+      xhr.send(formData);
+    });
   }
 
   private async uploadPamphletFallback(file: File): Promise<PamphletFile | null> {

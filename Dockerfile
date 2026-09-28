@@ -7,8 +7,8 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 # Install dependencies
-COPY package*.json ./
-RUN npm install --include=dev
+COPY .npmrc package*.json ./
+RUN npm install --include=dev --legacy-peer-deps
 
 # Copy application code
 COPY . .

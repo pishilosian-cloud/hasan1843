@@ -123,7 +123,6 @@ export const ChatInput: React.FC = () => {
           <button
             type="button"
             onClick={() => imageInputRef.current?.click()}
-            disabled={isDisconnected}
             className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shrink-0 shadow-xs ${
               attachedImage
                 ? 'bg-purple-600 border-purple-600 text-white'
@@ -141,21 +140,18 @@ export const ChatInput: React.FC = () => {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isDisconnected}
             placeholder={
-              isDisconnected
-                ? 'در حال اتصال به سرور چت...'
-                : attachedImage
+              attachedImage
                 ? 'توضیحی درباره این عکس بنویسید (اختیاری)...'
                 : 'پیام خود را بنویسید (یا برای پرسش از هوش مصنوعی: ai/ سوال)...'
             }
-            className="flex-1 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 rounded-xl px-4 py-3 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-50"
+            className="flex-1 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 rounded-xl px-4 py-3 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
           />
 
           {/* Send Button */}
           <button
             type="submit"
-            disabled={(!text.trim() && !attachedImage) || isDisconnected}
+            disabled={!text.trim() && !attachedImage}
             className={`p-3 rounded-xl text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0 shadow-sm active:scale-95 ${
               isAIPrompt
                 ? 'bg-purple-600 hover:bg-purple-700'

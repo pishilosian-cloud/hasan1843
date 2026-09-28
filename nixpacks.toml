@@ -1,3 +1,0 @@
-# Nixpacks configuration for Railway deployment
-[phases.install]
-cmds = ["bun install --no-frozen-lockfile"]

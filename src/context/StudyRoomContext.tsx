@@ -648,6 +648,20 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const sendMessage = (content: string): boolean => {
     const raw = content.trim();
     if (!raw) return false;
+
+    // Detect if user is asking AI via /ai or @ai or /هوش or ai/
+    const isAICommand = /^([/@]ai|ai\/|\/هوش)\b/i.test(raw);
+    if (isAICommand) {
+      const promptText = raw.replace(/^([/@]ai|ai\/|\/هوش)\s*/i, '').trim();
+      setIsAskingAI(true);
+      setAiThinking({
+        isThinking: true,
+        question: promptText || 'درخواست دستیار هوشمند در چت',
+        userName: currentUser.name || 'شما',
+        mode: aiMode,
+      });
+    }
+
     return chatService.sendMessage(raw, aiMode);
   };
 

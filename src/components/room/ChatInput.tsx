@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { Send, Bot, Sparkles, Camera, X } from 'lucide-react';
+import { Send, Bot, Sparkles, Camera, X, Loader2 } from 'lucide-react';
 
 export const ChatInput: React.FC = () => {
-  const { sendMessage, sendAIVision, connectionStatus, aiMode } = useStudyRoom();
+  const { sendMessage, sendAIVision, connectionStatus, aiMode, isAskingAI, aiThinking } = useStudyRoom();
   const [text, setText] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ file: File; previewUrl: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,8 +60,16 @@ export const ChatInput: React.FC = () => {
   return (
     <div className="w-full bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800 p-3 sm:p-4 shrink-0 transition-colors">
       <div className="max-w-4xl mx-auto space-y-2">
+        {/* Live Thinking Status Banner */}
+        {(isAskingAI || Boolean(aiThinking?.isThinking)) && (
+          <div className="flex items-center gap-2 text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/60 border border-purple-200/80 dark:border-purple-800 px-3 py-1.5 rounded-xl animate-pulse">
+            <Sparkles className="w-3.5 h-3.5 text-purple-600 animate-spin shrink-0" />
+            <span>🤖 جمینای در حال تحلیل و تفکر است...</span>
+          </div>
+        )}
+
         {/* Quick Helper Banner when invoking /ai or attaching image */}
-        {isAIPrompt && (
+        {isAIPrompt && !(isAskingAI || Boolean(aiThinking?.isThinking)) && (
           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 border border-purple-200/60 dark:border-purple-800/40 px-3 py-1 rounded-xl animate-in fade-in duration-150">
             <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
             <span>

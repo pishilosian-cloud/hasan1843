@@ -111,7 +111,7 @@ const avatarGradients = [
   'from-violet-500 to-fuchsia-600',
 ];
 
-const DATA_DIR = path.resolve(__dirname, '.data');
+const DATA_DIR = path.resolve(process.cwd(), '.data');
 const ROOMS_FILE = path.resolve(DATA_DIR, 'rooms.json');
 const MESSAGES_FILE = path.resolve(DATA_DIR, 'messages.json');
 const AI_FILE = path.resolve(DATA_DIR, 'ai_messages.json');
@@ -227,55 +227,8 @@ function seedInitialData() {
       },
     ]);
 
-    roomPamphlets.set(seedRoom1.id, [
-      {
-        id: 'pamphlet-seed-1',
-        roomId: 'ABC123',
-        name: 'جزوه_حسابداری_فصل۱و۲.txt',
-        size: '۳۵ کیلوبایت',
-        type: 'TXT',
-        uploadedBy: 'سارا احمدی',
-        createdAt: '۱۰:۱۰',
-        content: `مفاهیم اساسی حسابداری مالی:
-۱. دارایی جاری: دارایی‌هایی هستند که انتظار می‌رود در طول یک دوره مالی یا چرخه عملیاتی به نقد تبدیل، فروخته یا مصرف شوند. اقلام اصلی: وجه نقد، سرمایه‌گذاری‌های کوتاه‌مدت، حساب‌ها و اسناد دریافتنی، موجودی کالا و پیش‌پرداخت‌ها.
-۲. بدهی جاری: تعهداتی که تسویه آنها ظرف یک سال یا یک چرخه عملیاتی از محل دارایی‌های جاری انجام می‌گیرد.
-۳. معادله اساسی حسابداری: دارایی‌ها = بدهی‌ها + سرمایه (حقوق صاحبان سهام).
-۴. فرض تداوم فعالیت: فرض می‌شود واحد تجاری برای مدتی نامحدود به عملیات خود ادامه می‌دهد.
-۵. دوره مالی: عمر واحد تجاری به دوره‌های زمانی مساوی تقسیم می‌شود.`,
-      },
-    ]);
-
-    roomAIMessages.set(seedRoom1.id, [
-      {
-        id: 'aimsg-seed-1',
-        roomId: 'ABC123',
-        type: 'user',
-        sender: 'رضا محمدی',
-        senderId: 'user-seed-2',
-        senderAvatarBg: 'from-amber-500 to-orange-600',
-        message: 'دارایی جاری چیه و شامل چه مواردی میشه؟',
-        createdAt: '۱۰:۱۲',
-      },
-      {
-        id: 'aimsg-seed-2',
-        roomId: 'ABC123',
-        type: 'ai',
-        sender: 'دستیار هوشمند AI',
-        message: `بر اساس جزوه آپلود شده «جزوه_حسابداری_فصل۱و۲.txt»:
-
-دارایی‌های جاری دارایی‌هایی هستند که انتظار می‌رود ظرف یک سال مالی یا یک چرخه عملیاتی به وجه نقد تبدیل، مصرف یا فروخته شوند.
-
-اقلام اصلی دارایی‌های جاری:
-۱. وجه نقد و بانک
-۲. سرمایه‌گذاری‌های کوتاه‌مدت
-۳. حساب‌ها و اسناد دریافتنی تجاری
-۴. موجودی مواد و کالا
-۵. پیش‌پرداخت‌ها`,
-        createdAt: '۱۰:۱۲',
-        sources: ['جزوه_حسابداری_فصل۱و۲.txt'],
-        mode: 'simple',
-      },
-    ]);
+    roomPamphlets.set(seedRoom1.id, []);
+    roomAIMessages.set(seedRoom1.id, []);
   }
 
   saveStateToDisk();
@@ -1273,7 +1226,38 @@ app.post('/api/rooms/:roomId/pamphlets/:fileId/resume', async (req, res) => {
   res.json({ message: 'پردازش مجدداً فعال شد', job });
 });
 
-// 5. Get Chunks for Room
+// 5. Delete Pamphlet and its Chunks
+app.delete('/api/rooms/:roomId/pamphlets/:fileId', (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
+
+  const { fileId } = req.params;
+  const list = roomPamphlets.get(room.id) || [];
+  const index = list.findIndex((p) => p.id === fileId);
+  if (index === -1) {
+    return res.status(404).json({ error: 'جزوه پیدا نشد' });
+  }
+
+  const [deletedPamphlet] = list.splice(index, 1);
+  roomPamphlets.set(room.id, list);
+
+  // Delete physical files, extracted chunks, and job checkpoint
+  pamphletProcessor.deletePamphlet(room.id, fileId);
+  saveStateToDisk();
+
+  console.log(`[PAMPHLET LOG] Deleted pamphlet ${fileId} (${deletedPamphlet?.name}) from room ${room.id}`);
+
+  // Broadcast deletion to all members of the room
+  broadcastToRoom(room.id, {
+    type: 'pamphlet-deleted',
+    roomId: room.id,
+    fileId,
+  });
+
+  return res.json({ success: true, message: 'جزوه با موفقیت حذف شد.' });
+});
+
+// 6. Get Chunks for Room
 app.get('/api/rooms/:roomId/pamphlets/chunks', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
@@ -1281,7 +1265,7 @@ app.get('/api/rooms/:roomId/pamphlets/chunks', (req, res) => {
   res.json({ count: chunks.length, chunks });
 });
 
-// 6. Search Relevant Chunks in Room (Room-Isolated)
+// 7. Search Relevant Chunks in Room (Room-Isolated)
 app.get('/api/rooms/:roomId/pamphlets/search', (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'اتاق پیدا نشد' });
@@ -1394,7 +1378,12 @@ ${modeInstruction}
 
   inlineParts.push({ text: promptText });
 
-  const candidateModels = ['gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+  const candidateModels = [
+    'gemini-flash-latest',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+  ];
   let lastError: unknown = null;
   let answerText = '';
 
@@ -1734,7 +1723,7 @@ async function startServer() {
       }
 
       try {
-        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        let template = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
@@ -1743,7 +1732,7 @@ async function startServer() {
       }
     });
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(process.cwd(), 'dist');
     const distIndex = path.resolve(distPath, 'index.html');
     app.use(express.static(distPath));
 

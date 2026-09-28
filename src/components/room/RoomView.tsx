@@ -83,7 +83,7 @@ export const RoomView: React.FC = () => {
         onOpenAIDrawer={() => setIsAIOpen(true)}
       />
 
-      {/* Real In-App Live Voice Room Bar */}
+      {/* Voice Room Status & Controls Bar */}
       <VoiceRoomBar />
 
       {/* Connection State Alert Banner */}

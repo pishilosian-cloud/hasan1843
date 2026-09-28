@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
+import { GoogleGenAI } from '@google/genai';
 import type { PamphletChunk, PamphletFile } from '../types';
 
 export interface ProcessingJob {
@@ -465,11 +466,109 @@ export class PamphletProcessor {
         }
       }
 
+      if (chunks.length === 0 && totalPages > 0) {
+        console.log(`[PAMPHLET LOG] PDF has no extractable text. Attempting Gemini OCR fallback for fileId=${job.fileId}...`);
+        try {
+          const ocrChunks = await this.runGeminiOcr(job);
+          if (ocrChunks && ocrChunks.length > 0) {
+            chunks.push(...ocrChunks);
+            console.log(`[PAMPHLET LOG] Gemini OCR fallback succeeded! Extracted ${chunks.length} chunks for fileId=${job.fileId}`);
+          }
+        } catch (ocrErr) {
+          console.error(`[PAMPHLET LOG ERROR] Gemini OCR fallback failed for fileId=${job.fileId}:`, ocrErr);
+        }
+      }
+
       saveChunks(job.roomId, job.fileId, chunks);
       return { totalPages, chunks };
     } catch (err: unknown) {
       console.error(`[PAMPHLET LOG ERROR] PDF_EXTRACTION_FAILED fileId=${job.fileId}:`, err);
       throw new Error(`PDF_EXTRACTION_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Run Gemini OCR on scanned PDF pages
+   */
+  private async runGeminiOcr(job: ProcessingJob): Promise<PamphletChunk[]> {
+    const apiKey = (
+      process.env.GEMINI_API_KEY ||
+      process.env.API_KEY ||
+      ''
+    ).trim().replace(/^["']|["']$/g, '');
+
+    if (!apiKey) {
+      console.warn('[PAMPHLET LOG] Gemini API key not set, skipping OCR fallback.');
+      return [];
+    }
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const fileBytes = fs.readFileSync(job.filePath);
+      const base64Data = fileBytes.toString('base64');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: base64Data,
+            },
+          },
+          {
+            text: `شما یک پردازشگر سند فوق‌پیشرفته هستید. لطفاً تمام صفحات این فایل PDF اسکن‌شده یا تصویری را بخوانید و متن فارسی و انگلیسی هر صفحه را به صورت مجزا استخراج کنید.
+پاسخ خود را دقیقاً در قالب فرمت JSON زیر بازگردانید (فقط یک آرایه JSON و بدون هیچ متن اضافه یا قالب‌بندی دیگر):
+[
+  {
+    "page": 1,
+    "text": "متن استخراج شده از صفحه اول"
+  },
+  {
+    "page": 2,
+    "text": "متن استخراج شده از صفحه دوم"
+  }
+]`,
+          }
+        ],
+        config: {
+          responseMimeType: 'application/json',
+        }
+      });
+
+      if (!response.text) {
+        return [];
+      }
+
+      const parsed: Array<{ page: number; text: string }> = JSON.parse(response.text.trim());
+      const chunks: PamphletChunk[] = [];
+
+      for (const item of parsed) {
+        const pageNum = item.page || 1;
+        const pageText = (item.text || '').trim();
+        if (pageText) {
+          const pageChunks = chunkPageText(pageText, {
+            roomId: job.roomId,
+            fileId: job.fileId,
+            fileName: job.fileName,
+            pageNumber: pageNum,
+          });
+          chunks.push(...pageChunks);
+        }
+      }
+
+      return chunks;
+    } catch (err) {
+      console.error('[PAMPHLET LOG ERROR] Gemini OCR fallback failed:', err);
+      return [];
     }
   }
 

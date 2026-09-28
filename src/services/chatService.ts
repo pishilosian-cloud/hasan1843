@@ -84,7 +84,10 @@ class ChatService {
 
     console.log(`[ChatService] Connecting to room ${roomId} for user ${user.name}`);
 
-    // 1. Immediately hydrate via REST API so UI unblocks instantly
+    // Immediately mark as connected so UI is fully active and never blocked
+    this.updateStatus('connected');
+
+    // 1. Immediately hydrate via REST API so room loads within milliseconds
     this.hydrateRoomState(roomId, user);
 
     // 2. Setup WebSocket for live real-time bidirectional traffic
@@ -124,13 +127,15 @@ class ChatService {
           })
         );
 
+        if (data.members && Array.isArray(data.members)) {
+          this.presenceListeners.forEach((fn) => fn(data.members));
+        }
+
         if (data.voiceParticipants) {
           this.voiceParticipantsListeners.forEach((fn) => fn(data.voiceParticipants));
         }
 
-        if (this.status === 'disconnected' || this.status === 'connecting') {
-          this.updateStatus('connected');
-        }
+        this.updateStatus('connected');
       }
     } catch (err) {
       console.warn('[ChatService] Initial HTTP join fallback check:', err);

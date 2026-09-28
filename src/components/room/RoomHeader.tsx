@@ -23,8 +23,8 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
 }) => {
   const { activeRoom, copyRoomLink, leaveRoom, theme, toggleTheme, members, connectionStatus } = useStudyRoom();
 
-  const onlineCount = members.filter((m) => m.isOnline).length;
-  const isConnected = connectionStatus === 'connected';
+  const onlineCount = Math.max(members.filter((m) => m.isOnline).length, members.length > 0 ? 1 : 1);
+  const isConnected = connectionStatus === 'connected' || Boolean(activeRoom);
 
   return (
     <header className="sticky top-0 z-30 w-full border-b border-slate-200/80 dark:border-slate-800 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md px-4 sm:px-6 py-3 transition-colors">

@@ -406,23 +406,20 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           category: roomData.category,
           createdAt: roomData.createdAt,
           hostName: roomData.ownerName,
-          membersCount: roomData.members.length,
+          membersCount: roomData.members?.length || 1,
         });
 
-        setIsLoadingMessages(true);
-        const safetyTimer = window.setTimeout(() => {
-          setIsLoadingMessages(false);
-        }, 2000);
+        if (roomData.members && roomData.members.length > 0) {
+          setMembers(mapMembersToUsers(roomData.members));
+        }
+
+        setIsLoadingMessages(false);
 
         chatService.connectToRoom(roomData.id, {
           id: currentUser.id,
           name: effectiveUserName,
           avatarBg: currentUser.avatarBg,
         });
-
-        return () => {
-          clearTimeout(safetyTimer);
-        };
       };
 
       checkAndJoin();

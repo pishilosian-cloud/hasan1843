@@ -8,7 +8,17 @@ interface ChatMessageItemProps {
 }
 
 export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({ message }) => {
-  const { senderName, senderAvatarBg, content, timestamp, isSelf, isAI, attachment } = message;
+  if (!message) return null;
+
+  const {
+    senderName = 'کاربر',
+    senderAvatarBg,
+    content = '',
+    timestamp = '',
+    isSelf = false,
+    isAI = false,
+    attachment,
+  } = message;
 
   if (isAI) {
     return (

@@ -8,6 +8,8 @@ import { NameEntryModal } from './components/modals/NameEntryModal';
 import { OfflineIndicator } from './components/ui/OfflineIndicator';
 import { CheckCircle2, AlertCircle, Info, Loader2, DoorClosed } from 'lucide-react';
 
+import { ErrorBoundary } from './components/ui/ErrorBoundary';
+
 const ToastNotification: React.FC = () => {
   const { toast } = useStudyRoom();
 
@@ -123,8 +125,10 @@ const AppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <StudyRoomProvider>
-      <AppContent />
-    </StudyRoomProvider>
+    <ErrorBoundary>
+      <StudyRoomProvider>
+        <AppContent />
+      </StudyRoomProvider>
+    </ErrorBoundary>
   );
 }

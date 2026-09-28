@@ -1,7 +1,7 @@
 import React from 'react';
 
 interface AvatarProps {
-  name: string;
+  name?: string;
   bgGradient?: string;
   isOnline?: boolean;
   isSpeaking?: boolean;
@@ -11,7 +11,7 @@ interface AvatarProps {
 }
 
 export const Avatar: React.FC<AvatarProps> = ({
-  name,
+  name = '؟',
   bgGradient = 'from-indigo-500 to-purple-600',
   isOnline,
   isSpeaking,
@@ -25,7 +25,7 @@ export const Avatar: React.FC<AvatarProps> = ({
     lg: 'w-11 h-11 text-base',
   };
 
-  const initial = name ? name.trim().charAt(0).toUpperCase() : '?';
+  const initial = typeof name === 'string' && name.trim() ? name.trim().charAt(0).toUpperCase() : '؟';
 
   return (
     <div className="relative inline-block shrink-0">
@@ -35,7 +35,7 @@ export const Avatar: React.FC<AvatarProps> = ({
         } ${
           isAI
             ? 'bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 ring-2 ring-purple-400/30'
-            : `bg-gradient-to-br ${bgGradient}`
+            : `bg-gradient-to-br ${bgGradient || 'from-indigo-500 to-purple-600'}`
         } ${isSpeaking ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 animate-pulse' : ''}`}
       >
         {isAI ? (

@@ -2,16 +2,17 @@ import React from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
 import { Mic, MicOff, PhoneOff, Volume2 } from 'lucide-react';
 
-export function VoiceRoomBar(): React.JSX.Element | null {
+export function VoiceRoomBar(): React.ReactElement | null {
   const { voiceState, toggleVoiceCall, toggleMicrophone, members } = useStudyRoom();
 
   // If there is no active voice call or connection in progress, keep the bar unobtrusive
-  if (!voiceState.isCallActive && !voiceState.isConnecting) {
+  if (!voiceState || (!voiceState.isCallActive && !voiceState.isConnecting)) {
     return null;
   }
 
-  const activeSpeakersList = members.filter(
-    (m) => m.isSpeaking || m.id === 'user-2'
+  const safeMembers = Array.isArray(members) ? members : [];
+  const activeSpeakersList = safeMembers.filter(
+    (m) => m && (m.isSpeaking || m.id === 'user-2')
   );
 
   return (
@@ -32,7 +33,7 @@ export function VoiceRoomBar(): React.JSX.Element | null {
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
             </span>
             <span className="font-bold">تماس صوتی فعال</span>
-            {activeSpeakersList.length > 0 && (
+            {activeSpeakersList.length > 0 && activeSpeakersList[0]?.name && (
               <span className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium pr-2 border-r border-emerald-300 dark:border-emerald-800">
                 گوینده: {activeSpeakersList[0].name}
               </span>

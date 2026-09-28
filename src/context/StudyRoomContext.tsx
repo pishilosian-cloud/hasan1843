@@ -66,6 +66,7 @@ interface StudyRoomContextType {
   sendAIQuestion: (question: string, overrideMode?: AIMode) => Promise<void>;
   sendAIVision: (question: string, file: File, overrideMode?: AIMode) => Promise<void>;
   uploadPamphlet: (file: File) => Promise<void>;
+  deletePamphlet: (fileId: string) => Promise<boolean>;
 
   toggleVoiceCall: () => void;
   toggleMicrophone: () => void;
@@ -289,6 +290,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     });
 
+    const unsubPamphletDeleted = chatService.onPamphletDeleted((deletedId) => {
+      setPamphlets((prev) => prev.filter((p) => p.id !== deletedId));
+    });
+
     const unsubPamphletProgress = chatService.onPamphletProgress((progress) => {
       setPamphlets((prev) =>
         prev.map((item) => {
@@ -333,6 +338,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubAIHistory();
       unsubAIThinking();
       unsubPamphlet();
+      unsubPamphletDeleted();
       unsubPamphletProgress();
       unsubPresence();
       unsubStatus();
@@ -775,6 +781,27 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  const deletePamphlet = async (fileId: string): Promise<boolean> => {
+    if (!activeRoom) {
+      showToast('ابتدا وارد اتاق شوید', 'error');
+      return false;
+    }
+    try {
+      const ok = await chatService.deletePamphlet(fileId);
+      if (ok) {
+        setPamphlets((prev) => prev.filter((p) => p.id !== fileId));
+        showToast('جزوه با موفقیت حذف شد.');
+        return true;
+      } else {
+        showToast('خطا در حذف جزوه', 'error');
+        return false;
+      }
+    } catch {
+      showToast('خطا در حذف جزوه', 'error');
+      return false;
+    }
+  };
+
   const toggleVoiceCall = () => {
     if (voiceState.isCallActive) {
       setVoiceState({
@@ -889,6 +916,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         sendAIQuestion,
         sendAIVision,
         uploadPamphlet,
+        deletePamphlet,
         toggleVoiceCall,
         toggleMicrophone,
         copyRoomLink,

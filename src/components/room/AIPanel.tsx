@@ -15,6 +15,7 @@ import {
   Layers,
   Camera,
   X,
+  Trash2,
 } from 'lucide-react';
 
 export const AIPanel: React.FC = () => {
@@ -25,6 +26,7 @@ export const AIPanel: React.FC = () => {
     pamphlets = [],
     uploadProgress,
     uploadPamphlet,
+    deletePamphlet,
     isAskingAI = false,
     aiMode = 'simple',
     setAiMode,
@@ -34,6 +36,9 @@ export const AIPanel: React.FC = () => {
 
   const safeAIMessages = Array.isArray(aiMessages) ? aiMessages : [];
   const safePamphlets = Array.isArray(pamphlets) ? pamphlets : [];
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeletePamphlet, setConfirmDeletePamphlet] = useState<{ id: string; name: string } | null>(null);
 
   const [question, setQuestion] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ file: File; previewUrl: string } | null>(null);
@@ -185,15 +190,15 @@ export const AIPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* Upload Pamphlet Section: 📚 جزوه اتاق */}
+      {/* Upload Pamphlet Section: 📚 منابع این اتاق */}
       <div className="bg-gradient-to-br from-indigo-50/70 to-purple-50/40 dark:from-indigo-950/30 dark:to-purple-950/20 p-3 rounded-2xl border border-indigo-200/60 dark:border-indigo-900/40 mb-3 shrink-0">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
             <BookOpen className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <span>📚 جزوه اتاق</span>
+            <span>📚 منابع این اتاق</span>
           </div>
           <span className="text-[10px] font-medium text-slate-500 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/40">
-            {safePamphlets.length} فایل
+            {safePamphlets.length} جزوه
           </span>
         </div>
 
@@ -252,26 +257,38 @@ export const AIPanel: React.FC = () => {
           </div>
         )}
 
-        {/* Pamphlet List & Live Processing Progress */}
+        {/* Pamphlet List & Statuses */}
         {safePamphlets.length > 0 && (
-          <div className="mt-2.5 space-y-2 max-h-36 overflow-y-auto pl-1 pr-0.5">
+          <div className="mt-2.5 space-y-2 max-h-48 overflow-y-auto pl-1 pr-0.5">
             {safePamphlets.map((item) => (
               <div
                 key={item.id}
-                className="p-2 rounded-xl bg-white/95 dark:bg-slate-900/95 border border-indigo-100 dark:border-indigo-900/40 text-[11px] shadow-2xs"
+                className="p-2.5 rounded-xl bg-white/95 dark:bg-slate-900/95 border border-indigo-100 dark:border-indigo-900/40 text-[11px] shadow-2xs"
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-1.5 truncate max-w-[170px]">
                     <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                     <span className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={item.name}>
-                      {item.name}
+                      📄 {item.name}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className="text-[9px] font-mono uppercase bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-slate-500">
                       {item.type}
                     </span>
-                    <span className="text-[10px] text-slate-400">{item.size}</span>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeletePamphlet({ id: item.id, name: item.name })}
+                      disabled={deletingId === item.id}
+                      className="p-1 rounded hover:bg-rose-50 dark:hover:bg-rose-950/60 text-rose-500 transition-colors cursor-pointer title='حذف جزوه'"
+                      title="حذف جزوه"
+                    >
+                      {deletingId === item.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-500" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                   </div>
                 </div>
 
@@ -279,60 +296,44 @@ export const AIPanel: React.FC = () => {
                 {item.status === 'processing' ? (
                   <div className="mt-1 pt-1 border-t border-slate-100 dark:border-slate-800">
                     <div className="flex items-center justify-between text-[10px] text-indigo-600 dark:text-indigo-400 mb-1">
-                      <span className="flex items-center gap-1">
+                      <span className="flex items-center gap-1 font-semibold">
                         <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>
-                          در حال پردازش و استخراج...
-                          {item.pagesCount ? ` صفحه ${item.processedPages || 0} از ${item.pagesCount}` : ''}
-                        </span>
+                        <span>⏳ در حال پردازش...</span>
                       </span>
-                      <span className="font-mono font-bold">{item.progressPercent || 0}٪</span>
+                      {item.progressPercent ? (
+                        <span className="font-mono font-bold">{item.progressPercent}٪</span>
+                      ) : null}
                     </div>
                     <div className="w-full h-1.5 bg-indigo-100 dark:bg-indigo-950 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.max(5, item.progressPercent || 0)}%` }}
+                        style={{ width: `${Math.max(5, item.progressPercent || 15)}%` }}
                       />
                     </div>
                   </div>
-                ) : item.status === 'scanned_ocr_required' ? (
-                  <div className="mt-1 pt-1 border-t border-amber-100 dark:border-amber-950/40 flex items-center justify-between text-[10px] text-amber-700 dark:text-amber-400">
-                    <span className="truncate max-w-[170px]" title="این PDF اسکن‌شده یا تصویری است و متن تایپی مستقیم ندارد.">
-                      فایل تصویری/اسکن‌شده (نیازمند OCR)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
-                      }}
-                      className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 hover:bg-amber-200 cursor-pointer font-bold shrink-0"
-                    >
-                      تلاش مجدد
-                    </button>
-                  </div>
-                ) : item.status === 'error' ? (
+                ) : item.status === 'error' || item.status === 'scanned_ocr_required' ? (
                   <div className="mt-1 pt-1 border-t border-rose-100 dark:border-rose-950/40 flex items-center justify-between text-[10px] text-rose-600 dark:text-rose-400">
-                    <span className="truncate max-w-[170px]" title={item.error || 'خطا در خواندن یا تفکیک متن فایل'}>
-                      {item.error || 'خطا در استخراج متن'}
+                    <span className="truncate max-w-[160px] font-semibold" title={item.error || 'خطا در پردازش فایل'}>
+                      خطا در پردازش
                     </span>
                     <button
                       type="button"
                       onClick={() => {
                         fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
                       }}
-                      className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950 hover:bg-rose-100 cursor-pointer font-bold shrink-0"
+                      className="px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950 hover:bg-rose-100 dark:hover:bg-rose-900 border border-rose-200 dark:border-rose-800 cursor-pointer font-bold shrink-0 transition-colors"
                     >
                       تلاش مجدد
                     </button>
                   </div>
                 ) : (
-                  <div className="mt-1 pt-0.5 flex items-center justify-between text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  <div className="mt-1 pt-0.5 flex items-center justify-between text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
                     <span className="flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                      <span>آماده پرسش و جست‌وجو</span>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>✓ آماده استفاده توسط AI</span>
                     </span>
                     {item.pagesCount ? (
-                      <span className="text-slate-400">{item.pagesCount} صفحه</span>
+                      <span className="text-slate-400 font-normal">{item.pagesCount} صفحه</span>
                     ) : null}
                   </div>
                 )}
@@ -341,6 +342,44 @@ export const AIPanel: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Confirmation Modal for Deleting Pamphlet */}
+      {confirmDeletePamphlet && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 max-w-sm w-full text-right shadow-xl">
+            <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100 mb-2">
+              حذف جزوه منبع
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 leading-relaxed">
+              آیا مطمئن هستید که می‌خواهید جزوه <strong className="text-slate-800 dark:text-slate-200">«{confirmDeletePamphlet.name}»</strong> را حذف کنید؟
+            </p>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setConfirmDeletePamphlet(null)}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                انصراف
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const target = confirmDeletePamphlet;
+                  setConfirmDeletePamphlet(null);
+                  if (target) {
+                    setDeletingId(target.id);
+                    await deletePamphlet(target.id);
+                    setDeletingId(null);
+                  }
+                }}
+                className="px-3.5 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors shadow-xs cursor-pointer"
+              >
+                🗑 حذف فایل
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Shared AI Q&A Stream - Smooth Native Container Scroll without Page Jumping */}
       <div

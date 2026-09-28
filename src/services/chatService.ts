@@ -9,7 +9,9 @@ import {
   AIThinkingState,
   WSClientMessage,
   WSServerMessage,
+  VoiceParticipant,
 } from '../types';
+import { webrtcVoiceService } from './webrtcVoiceService';
 
 type MessageHandler = (message: ChatMessage) => void;
 type PresenceHandler = (members: RoomMember[]) => void;
@@ -20,6 +22,7 @@ type InitHandler = (data: {
   aiMessages?: AIMessage[];
   pamphlets?: PamphletFile[];
   aiThinking?: AIThinkingState;
+  voiceParticipants?: VoiceParticipant[];
 }) => void;
 type AIMessageHandler = (message: AIMessage) => void;
 type AIHistoryHandler = (messages: AIMessage[]) => void;
@@ -27,6 +30,7 @@ type AIThinkingHandler = (thinking: AIThinkingState) => void;
 type PamphletHandler = (pamphlet: PamphletFile) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type ErrorHandler = (error: string) => void;
+type VoiceParticipantsHandler = (participants: VoiceParticipant[]) => void;
 
 class ChatService {
   private ws: WebSocket | null = null;
@@ -53,6 +57,7 @@ class ChatService {
   private pamphletListeners = new Set<PamphletHandler>();
   private statusListeners = new Set<StatusHandler>();
   private errorListeners = new Set<ErrorHandler>();
+  private voiceParticipantsListeners = new Set<VoiceParticipantsHandler>();
 
   private updateStatus(newStatus: ConnectionStatus) {
     if (this.status !== newStatus) {
@@ -61,97 +66,99 @@ class ChatService {
     }
   }
 
-  public getStatus(): ConnectionStatus {
-    return this.status;
-  }
-
-  public connectToRoom(roomId: string, user: { id: string; name: string; avatarBg?: string }) {
-    const cleanRoomId = roomId.trim().toUpperCase();
-    if (this.currentRoomId === cleanRoomId && this.currentUser?.id === user.id && (this.isWsHealthy || this.status === 'connected')) {
+  public connectToRoom(
+    roomId: string,
+    user: { id: string; name: string; avatarBg?: string }
+  ) {
+    if (this.currentRoomId === roomId && this.ws && this.ws.readyState === WebSocket.OPEN) {
       return;
     }
 
     this.intentionalDisconnect = false;
-    this.currentRoomId = cleanRoomId;
+    this.currentRoomId = roomId;
     this.currentUser = user;
     this.reconnectAttempts = 0;
-    this.cachedAIMsgCount = 0;
-    this.cachedLastAIMsgId = '';
 
-    // Immediately fetch initial state via HTTP
-    this.syncRoomStateHTTP(true);
-
-    // Establish WebSocket connection
-    this.establishConnection();
-
-    // Start background HTTP sync as backup
-    this.startHttpPolling();
+    this.setupWebSocket();
+    this.startStatePolling();
   }
 
-  private getWebSocketUrl(): string {
-    if (typeof window === 'undefined') return 'ws://localhost:3000/ws';
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}/ws`;
-  }
+  public leaveRoom() {
+    this.intentionalDisconnect = true;
 
-  private async syncRoomStateHTTP(isInitial = false) {
-    if (!this.currentRoomId || !this.currentUser) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
-    try {
-      if (isInitial) {
-        const joinRes = await fetch(`/api/rooms/${this.currentRoomId}/join`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user: this.currentUser }),
-        });
+    this.stopHeartbeat();
+    this.stopStatePolling();
 
-        if (joinRes.ok) {
-          const data = await joinRes.json();
-          this.cachedAIMsgCount = data.aiMessages?.length || 0;
-          this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
-          this.initListeners.forEach((fn) => fn(data));
-          this.updateStatus('connected');
-          return;
+    // Also exit any active in-app voice session
+    webrtcVoiceService.stopVoice();
+
+    if (this.ws) {
+      try {
+        if (this.currentRoomId && this.currentUser && this.ws.readyState === WebSocket.OPEN) {
+          const leaveMsg: WSClientMessage = {
+            type: 'leave-room',
+            roomId: this.currentRoomId,
+            userId: this.currentUser.id,
+          };
+          this.ws.send(JSON.stringify(leaveMsg));
         }
+        this.ws.close();
+      } catch {
+        // ignore
       }
+      this.ws = null;
+    }
 
-      const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
-      if (res.ok) {
+    this.currentRoomId = null;
+    this.updateStatus('disconnected');
+  }
+
+  private startStatePolling() {
+    this.stopStatePolling();
+    this.pollInterval = window.setInterval(async () => {
+      if (!this.currentRoomId || this.intentionalDisconnect) return;
+      try {
+        const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
+        if (!res.ok) return;
         const data = await res.json();
-        if (isInitial) {
-          this.cachedAIMsgCount = data.aiMessages?.length || 0;
-          this.cachedLastAIMsgId = data.aiMessages?.[data.aiMessages.length - 1]?.id || '';
-          this.initListeners.forEach((fn) => fn(data));
-        } else {
+
+        if (data.members) {
           this.presenceListeners.forEach((fn) => fn(data.members));
-          if (data.messages && Array.isArray(data.messages)) {
-            data.messages.forEach((msg: ChatMessage) => {
-              this.messageListeners.forEach((fn) => fn(msg));
-            });
-          }
-          // Only emit AI history if new messages actually arrived (avoids resetting scroll position!)
-          if (data.aiMessages && Array.isArray(data.aiMessages)) {
-            const lastId = data.aiMessages[data.aiMessages.length - 1]?.id || '';
-            if (data.aiMessages.length !== this.cachedAIMsgCount || lastId !== this.cachedLastAIMsgId) {
-              this.cachedAIMsgCount = data.aiMessages.length;
-              this.cachedLastAIMsgId = lastId;
-              this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
-            }
-          }
-          if (data.pamphlets && Array.isArray(data.pamphlets)) {
-            data.pamphlets.forEach((p: PamphletFile) => {
-              this.pamphletListeners.forEach((fn) => fn(p));
-            });
+        }
+
+        if (data.aiThinking) {
+          this.aiThinkingListeners.forEach((fn) => fn(data.aiThinking));
+        }
+
+        if (data.aiMessages && Array.isArray(data.aiMessages)) {
+          const serverCount = data.aiMessages.length;
+          const serverLastId = serverCount > 0 ? data.aiMessages[serverCount - 1].id : '';
+
+          if (serverCount !== this.cachedAIMsgCount || serverLastId !== this.cachedLastAIMsgId) {
+            this.cachedAIMsgCount = serverCount;
+            this.cachedLastAIMsgId = serverLastId;
+            this.aiHistoryListeners.forEach((fn) => fn(data.aiMessages));
           }
         }
-        this.updateStatus('connected');
+      } catch {
+        // ignore transient poll errors
       }
-    } catch {
-      // ignore network errors silently during polling
+    }, 2000);
+  }
+
+  private stopStatePolling() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
     }
   }
 
-  private establishConnection() {
+  private setupWebSocket() {
     if (this.ws) {
       try {
         this.ws.close();
@@ -161,13 +168,14 @@ class ChatService {
       this.ws = null;
     }
 
-    if (this.status !== 'connected') {
-      this.updateStatus('connecting');
-    }
+    this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
     try {
-      const url = this.getWebSocketUrl();
-      this.ws = new WebSocket(url);
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const wsUrl = `${protocol}//${host}/ws`;
+
+      this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
         this.isWsHealthy = true;
@@ -205,8 +213,12 @@ class ChatService {
                   aiMessages: data.aiMessages,
                   pamphlets: data.pamphlets,
                   aiThinking: data.aiThinking,
+                  voiceParticipants: data.voiceParticipants,
                 })
               );
+              if (data.voiceParticipants) {
+                this.voiceParticipantsListeners.forEach((fn) => fn(data.voiceParticipants!));
+              }
             }
             return;
           }
@@ -264,6 +276,43 @@ class ChatService {
             return;
           }
 
+          // Voice Chat Real-Time Events
+          if (data.type === 'voice-participants-updated') {
+            if (data.roomId === this.currentRoomId) {
+              this.voiceParticipantsListeners.forEach((fn) => fn(data.participants));
+            }
+            return;
+          }
+
+          if (data.type === 'voice-user-joined') {
+            if (data.roomId === this.currentRoomId) {
+              // Initiate WebRTC call to newly joined peer
+              webrtcVoiceService.callPeer(data.participant.userId);
+            }
+            return;
+          }
+
+          if (data.type === 'voice-user-left') {
+            if (data.roomId === this.currentRoomId) {
+              webrtcVoiceService.removePeer(data.userId);
+            }
+            return;
+          }
+
+          if (data.type === 'voice-signal') {
+            if (data.roomId === this.currentRoomId) {
+              webrtcVoiceService.handleSignal(data.senderId, data.senderName || '', data.signal);
+            }
+            return;
+          }
+
+          if (data.type === 'voice-speaking') {
+            if (data.roomId === this.currentRoomId) {
+              // handoff to context / listeners
+            }
+            return;
+          }
+
           if (data.type === 'error') {
             this.errorListeners.forEach((fn) => fn(data.message));
             return;
@@ -297,13 +346,15 @@ class ChatService {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = Math.min(2000 * this.reconnectAttempts, 10000);
+      this.updateStatus('reconnecting');
 
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = window.setTimeout(() => {
-        if (!this.intentionalDisconnect && this.currentRoomId) {
-          this.establishConnection();
+        if (!this.intentionalDisconnect && this.currentRoomId && this.currentUser) {
+          this.setupWebSocket();
         }
       }, delay);
+    } else {
+      this.updateStatus('disconnected');
     }
   }
 
@@ -323,74 +374,72 @@ class ChatService {
     }
   }
 
-  private startHttpPolling() {
-    this.stopHttpPolling();
-    this.pollInterval = window.setInterval(() => {
-      if (!this.intentionalDisconnect && this.currentRoomId) {
-        this.syncRoomStateHTTP(false);
-      }
-    }, 3000);
-  }
-
-  private stopHttpPolling() {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = null;
+  private sendWS(data: WSClientMessage): boolean {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+      return true;
     }
+    return false;
   }
 
   public sendMessage(content: string, mode: AIMode = 'simple'): boolean {
-    const raw = content.trim();
-    if (!raw || !this.currentRoomId || !this.currentUser) return false;
+    const trimmed = content.trim();
+    if (!trimmed || !this.currentRoomId || !this.currentUser) return false;
 
-    const msgPayload = {
-      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      content: raw,
-      senderId: this.currentUser.id,
-      senderName: this.currentUser.name,
-      senderAvatarBg: this.currentUser.avatarBg,
-    };
+    const roomId = this.currentRoomId;
+    const user = this.currentUser;
 
-    let sentViaWs = false;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      sentViaWs = this.sendWS({
-        type: 'send-message',
-        roomId: this.currentRoomId,
-        message: msgPayload,
-        mode,
-      });
-    }
+    const tempId = `msg-${Date.now()}`;
+    const sentViaWs = this.sendWS({
+      type: 'send-message',
+      roomId,
+      message: {
+        id: tempId,
+        content: trimmed,
+        senderId: user.id,
+        senderName: user.name,
+        senderAvatarBg: user.avatarBg,
+      },
+      mode,
+    });
 
-    if (!sentViaWs && this.currentRoomId) {
-      fetch(`/api/rooms/${this.currentRoomId}/messages`, {
+    if (!sentViaWs) {
+      fetch(`/api/rooms/${roomId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...msgPayload, mode }),
-      })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((savedMsg: ChatMessage | null) => {
-          if (savedMsg) {
-            this.messageListeners.forEach((fn) => fn(savedMsg));
-          }
-        })
-        .catch((err) => {
-          console.warn('Failed to send message via HTTP REST:', err);
-        });
+        body: JSON.stringify({
+          content: trimmed,
+          senderId: user.id,
+          senderName: user.name,
+          senderAvatarBg: user.avatarBg,
+          mode,
+        }),
+      }).catch((err) => {
+        console.error('Failed to fallback send message via HTTP:', err);
+      });
     }
 
     return true;
   }
 
-  /**
-   * Secure AI Endpoint: POST /api/ai/chat
-   * Supports both simple and complex (deep reasoning) modes
-   */
   public async askAI(question: string, mode: AIMode = 'simple'): Promise<boolean> {
     const raw = question.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
     const roomId = this.currentRoomId;
     const user = this.currentUser;
+
+    const sentWS = this.sendWS({
+      type: 'ai-ask',
+      roomId,
+      question: raw,
+      mode,
+      user,
+    });
+
+    if (sentWS) {
+      return true;
+    }
 
     try {
       const res = await fetch('/api/ai/chat', {
@@ -404,6 +453,7 @@ class ChatService {
           mode,
           userId: user.id,
           userName: user.name,
+          user,
         }),
       });
 
@@ -426,10 +476,6 @@ class ChatService {
     }
   }
 
-  /**
-   * Secure Multimodal AI Endpoint: POST /api/ai/vision
-   * Sends image + optional prompt to server-side Gemini safely
-   */
   public async askAIVision(
     question: string,
     imageData: string,
@@ -450,7 +496,7 @@ class ChatService {
         },
         body: JSON.stringify({
           roomId,
-          message: raw || 'لطفاً این تصویر (فرمول / مسئله / نمودار / صفحه درس) را تحلیل کن و پاسخ کامل بده.',
+          message: raw || 'لطفاً این تصویر را تحلیل کن و پاسخ کامل بده.',
           image: imageData,
           mimeType: mimeType || 'image/jpeg',
           mode,
@@ -478,100 +524,93 @@ class ChatService {
     }
   }
 
-  /**
-   * Safe AI Health Check: GET /api/ai/status
-   */
-  public async checkAIStatus(): Promise<boolean> {
-    try {
-      const res = await fetch('/api/ai/status');
-      if (res.ok) {
-        const data = await res.json();
-        return Boolean(data.available);
-      }
-    } catch {
-      // ignore
-    }
-    return false;
-  }
-
   public async uploadPamphlet(pamphletData: {
     name: string;
     size: string;
     type: string;
-    content?: string;
-  }): Promise<PamphletFile | null> {
-    if (!this.currentRoomId || !this.currentUser) return null;
+    content: string;
+  }): Promise<boolean> {
+    if (!this.currentRoomId || !this.currentUser) return false;
 
     try {
       const res = await fetch(`/api/rooms/${this.currentRoomId}/pamphlets`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           ...pamphletData,
           uploadedBy: this.currentUser.name,
         }),
       });
 
-      if (res.ok) {
-        const created: PamphletFile = await res.json();
-        this.pamphletListeners.forEach((fn) => fn(created));
-        return created;
-      }
-    } catch (err) {
-      console.error('Failed to upload pamphlet:', err);
+      return res.ok;
+    } catch {
+      return false;
     }
-    return null;
   }
 
-  private sendWS(msg: WSClientMessage): boolean {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify(msg));
-        return true;
-      } catch {
-        return false;
-      }
-    }
-    return false;
+  // --- WebRTC Voice Chat Methods ---
+
+  public joinVoiceRoom(user: { id: string; name: string; avatarBg?: string; isMuted?: boolean }) {
+    if (!this.currentRoomId) return;
+    this.sendWS({
+      type: 'voice-join',
+      roomId: this.currentRoomId,
+      user,
+    });
   }
 
-  public leaveRoom() {
-    this.intentionalDisconnect = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.stopHeartbeat();
-    this.stopHttpPolling();
-
-    if (this.ws && this.currentRoomId && this.currentUser) {
-      this.sendWS({
-        type: 'leave-room',
-        roomId: this.currentRoomId,
-        userId: this.currentUser.id,
-      });
-      try {
-        this.ws.close();
-      } catch {
-        // ignore
-      }
-    }
-
-    this.ws = null;
-    this.currentRoomId = null;
-    this.currentUser = null;
-    this.updateStatus('disconnected');
+  public leaveVoiceRoom(userId: string) {
+    if (!this.currentRoomId) return;
+    this.sendWS({
+      type: 'voice-leave',
+      roomId: this.currentRoomId,
+      userId,
+    });
   }
 
-  // Subscription methods
-  public onInit(listener: InitHandler) {
-    this.initListeners.add(listener);
-    return () => this.initListeners.delete(listener);
+  public sendVoiceSignal(targetUserId: string, senderId: string, senderName: string, signal: any) {
+    if (!this.currentRoomId) return;
+    this.sendWS({
+      type: 'voice-signal',
+      roomId: this.currentRoomId,
+      targetUserId,
+      senderId,
+      senderName,
+      signal,
+    });
   }
 
+  public sendVoiceMute(userId: string, isMuted: boolean) {
+    if (!this.currentRoomId) return;
+    this.sendWS({
+      type: 'voice-mute',
+      roomId: this.currentRoomId,
+      userId,
+      isMuted,
+    });
+  }
+
+  public sendVoiceSpeaking(userId: string, isSpeaking: boolean) {
+    if (!this.currentRoomId) return;
+    this.sendWS({
+      type: 'voice-speaking',
+      roomId: this.currentRoomId,
+      userId,
+      isSpeaking,
+    });
+  }
+
+  // Event Listeners
   public onNewMessage(listener: MessageHandler) {
     this.messageListeners.add(listener);
     return () => this.messageListeners.delete(listener);
+  }
+
+  public onInit(listener: InitHandler) {
+    this.initListeners.add(listener);
+    return () => this.initListeners.delete(listener);
   }
 
   public onAIMessage(listener: AIMessageHandler) {
@@ -597,6 +636,11 @@ class ChatService {
   public onPresenceUpdate(listener: PresenceHandler) {
     this.presenceListeners.add(listener);
     return () => this.presenceListeners.delete(listener);
+  }
+
+  public onVoiceParticipants(listener: VoiceParticipantsHandler) {
+    this.voiceParticipantsListeners.add(listener);
+    return () => this.voiceParticipantsListeners.delete(listener);
   }
 
   public onStatusChange(listener: StatusHandler) {

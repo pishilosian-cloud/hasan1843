@@ -16,6 +16,10 @@ export interface Room {
   createdAt: string;
   hostName: string;
   membersCount: number;
+  meetUrl?: string | null;
+  meetCode?: string | null;
+  meetCreatorName?: string | null;
+  meetStartedAt?: string | null;
 }
 
 export interface RoomMember {
@@ -35,6 +39,10 @@ export interface RoomData {
   ownerId: string;
   ownerName: string;
   members: RoomMember[];
+  meetUrl?: string | null;
+  meetCode?: string | null;
+  meetCreatorName?: string | null;
+  meetStartedAt?: string | null;
 }
 
 export interface ChatMessage {
@@ -96,12 +104,24 @@ export interface PamphletFile {
   pagesCount?: number;
 }
 
+export interface VoiceParticipant {
+  userId: string;
+  name: string;
+  avatarBg?: string;
+  isMuted: boolean;
+  isSpeaking: boolean;
+  joinedAt: string;
+}
+
 export interface VoiceState {
   isCallActive: boolean;
   isMuted: boolean;
   isConnecting: boolean;
   connectedAt?: string;
+  participants: VoiceParticipant[];
   activeSpeakers: string[];
+  audioLevel: number;
+  error?: string | null;
 }
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
@@ -114,6 +134,11 @@ export type WSClientMessage =
   | { type: 'leave-room'; roomId: string; userId: string }
   | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string }; mode?: AIMode }
   | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string } }
+  | { type: 'voice-join'; roomId: string; user: { id: string; name: string; avatarBg?: string; isMuted?: boolean } }
+  | { type: 'voice-leave'; roomId: string; userId: string }
+  | { type: 'voice-signal'; roomId: string; targetUserId: string; senderId: string; senderName?: string; signal: any }
+  | { type: 'voice-mute'; roomId: string; userId: string; isMuted: boolean }
+  | { type: 'voice-speaking'; roomId: string; userId: string; isSpeaking: boolean }
   | { type: 'ping' };
 
 export type WSServerMessage =
@@ -126,6 +151,7 @@ export type WSServerMessage =
       aiMessages: AIMessage[];
       pamphlets: PamphletFile[];
       aiThinking?: AIThinkingState;
+      voiceParticipants?: VoiceParticipant[];
     }
   | { type: 'new-message'; roomId: string; message: ChatMessage }
   | { type: 'ai-message'; roomId: string; message: AIMessage }
@@ -135,5 +161,11 @@ export type WSServerMessage =
   | { type: 'presence-update'; roomId: string; members: RoomMember[] }
   | { type: 'user-joined'; roomId: string; member: RoomMember }
   | { type: 'user-left'; roomId: string; userId: string }
+  | { type: 'voice-participants-updated'; roomId: string; participants: VoiceParticipant[] }
+  | { type: 'voice-user-joined'; roomId: string; participant: VoiceParticipant }
+  | { type: 'voice-user-left'; roomId: string; userId: string }
+  | { type: 'voice-signal'; roomId: string; senderId: string; senderName?: string; signal: any }
+  | { type: 'voice-speaking'; roomId: string; userId: string; isSpeaking: boolean }
+  | { type: 'voice-mute'; roomId: string; userId: string; isMuted: boolean }
   | { type: 'error'; message: string }
   | { type: 'pong' };

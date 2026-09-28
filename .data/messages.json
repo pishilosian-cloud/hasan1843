@@ -21,6 +21,17 @@
       "timestamp": "۱۰:۰۶",
       "createdAt": "2026-09-27T20:41:55.575Z",
       "isSelf": false
+    },
+    {
+      "id": "msg-meet-1790588914063",
+      "roomId": "ABC123",
+      "senderId": "system-meet",
+      "senderName": "جلسه Google Meet",
+      "senderAvatarBg": "from-blue-600 to-emerald-600",
+      "content": "📞 جلسه صوتی/تصویری گوگل میت توسط سارا شروع شد.\nلینک ورود: https://meet.google.com/abc-defg-hij",
+      "timestamp": "۰۹:۴۸",
+      "createdAt": "2026-09-28T09:48:34.061Z",
+      "isSelf": false
     }
   ],
   "MATH101": [],

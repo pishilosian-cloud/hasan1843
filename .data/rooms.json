@@ -31,7 +31,11 @@
         "avatarBg": "from-indigo-500 to-purple-600",
         "role": "member"
       }
-    ]
+    ],
+    "meetUrl": null,
+    "meetCode": null,
+    "meetCreatorName": null,
+    "meetStartedAt": null
   },
   "MATH101": {
     "id": "MATH101",

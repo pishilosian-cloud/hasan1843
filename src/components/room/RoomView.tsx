@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
 import { RoomHeader } from './RoomHeader';
+import { VoiceRoomBar } from './VoiceRoomBar';
 import { RoomSidebar } from './RoomSidebar';
 import { AIPanel } from './AIPanel';
 import { ChatMessageItem } from './ChatMessageItem';
@@ -81,6 +82,9 @@ export const RoomView: React.FC = () => {
         onOpenSidebarDrawer={() => setIsSidebarOpen(true)}
         onOpenAIDrawer={() => setIsAIOpen(true)}
       />
+
+      {/* Real In-App Live Voice Room Bar */}
+      <VoiceRoomBar />
 
       {/* Connection State Alert Banner */}
       {connectionStatus === 'reconnecting' && (

@@ -15,6 +15,7 @@ import type {
   AIMode,
   WSClientMessage,
   WSServerMessage,
+  VoiceParticipant,
 } from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -61,11 +62,12 @@ app.use((req, res, next) => {
 // JSON body parser with 25MB limit for pamphlet uploads
 app.use(express.json({ limit: '25mb' }));
 
-// In-Memory Database for Rooms, Messages, AI Conversations, and Pamphlets
+// In-Memory Database for Rooms, Messages, AI Conversations, Pamphlets, and Voice Participants
 const rooms = new Map<string, RoomData>();
 const roomMessages = new Map<string, ChatMessage[]>();
 const roomAIMessages = new Map<string, AIMessage[]>();
 const roomPamphlets = new Map<string, PamphletFile[]>();
+const roomVoiceParticipants = new Map<string, Map<string, VoiceParticipant>>();
 const roomClients = new Map<string, Set<WebSocket>>();
 const clientMetadata = new WeakMap<WebSocket, { roomId?: string; userId?: string; userName?: string }>();
 
@@ -1199,6 +1201,8 @@ wss.on('connection', (ws: WebSocket) => {
           content: undefined,
         }));
 
+        const currentVoiceParticipants = Array.from((roomVoiceParticipants.get(roomId) || new Map()).values());
+
         const initMsg: WSServerMessage = {
           type: 'room-init',
           roomId,
@@ -1207,6 +1211,7 @@ wss.on('connection', (ws: WebSocket) => {
           members: room.members,
           aiMessages: currentAIMessages,
           pamphlets: currentPamphlets,
+          voiceParticipants: currentVoiceParticipants,
         };
         ws.send(JSON.stringify(initMsg));
 
@@ -1332,6 +1337,131 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
 
+      // Native In-App WebRTC Voice Chat: Join Voice Room
+      if (msg.type === 'voice-join') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room || !msg.user?.id) return;
+        const roomId = room.id;
+
+        if (!roomVoiceParticipants.has(roomId)) {
+          roomVoiceParticipants.set(roomId, new Map());
+        }
+        const vpMap = roomVoiceParticipants.get(roomId)!;
+
+        const participant: VoiceParticipant = {
+          userId: msg.user.id,
+          name: msg.user.name,
+          avatarBg: msg.user.avatarBg || avatarGradients[0],
+          isMuted: Boolean(msg.user.isMuted),
+          isSpeaking: false,
+          joinedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+        };
+
+        vpMap.set(msg.user.id, participant);
+
+        // Broadcast to all participants the updated participant list
+        broadcastToRoom(roomId, {
+          type: 'voice-participants-updated',
+          roomId,
+          participants: Array.from(vpMap.values()),
+        });
+
+        // Notify other participants so they can initiate P2P WebRTC calls
+        broadcastToRoom(
+          roomId,
+          {
+            type: 'voice-user-joined',
+            roomId,
+            participant,
+          },
+          ws
+        );
+        return;
+      }
+
+      // Native In-App WebRTC Voice Chat: Leave Voice Room
+      if (msg.type === 'voice-leave') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room || !msg.userId) return;
+        const roomId = room.id;
+        const vpMap = roomVoiceParticipants.get(roomId);
+        if (vpMap && vpMap.has(msg.userId)) {
+          vpMap.delete(msg.userId);
+
+          broadcastToRoom(roomId, {
+            type: 'voice-user-left',
+            roomId,
+            userId: msg.userId,
+          });
+
+          broadcastToRoom(roomId, {
+            type: 'voice-participants-updated',
+            roomId,
+            participants: Array.from(vpMap.values()),
+          });
+        }
+        return;
+      }
+
+      // Native In-App WebRTC Voice Chat: Peer-to-Peer Signaling Relay (Offer/Answer/ICE)
+      if (msg.type === 'voice-signal') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room || !msg.targetUserId) return;
+        const clients = roomClients.get(room.id);
+        if (clients) {
+          const payload = JSON.stringify({
+            type: 'voice-signal',
+            roomId: room.id,
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            signal: msg.signal,
+          });
+          for (const client of clients) {
+            const meta = clientMetadata.get(client);
+            if (meta && meta.userId === msg.targetUserId && client.readyState === WebSocket.OPEN) {
+              client.send(payload);
+            }
+          }
+        }
+        return;
+      }
+
+      // Native In-App Voice: Mute state update
+      if (msg.type === 'voice-mute') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room || !msg.userId) return;
+        const vpMap = roomVoiceParticipants.get(room.id);
+        if (vpMap && vpMap.has(msg.userId)) {
+          const p = vpMap.get(msg.userId)!;
+          p.isMuted = msg.isMuted;
+          broadcastToRoom(room.id, {
+            type: 'voice-mute',
+            roomId: room.id,
+            userId: msg.userId,
+            isMuted: msg.isMuted,
+          });
+        }
+        return;
+      }
+
+      // Native In-App Voice: Speaking indicator update
+      if (msg.type === 'voice-speaking') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room || !msg.userId) return;
+        const vpMap = roomVoiceParticipants.get(room.id);
+        if (vpMap && vpMap.has(msg.userId)) {
+          const p = vpMap.get(msg.userId)!;
+          p.isSpeaking = msg.isSpeaking;
+          broadcastToRoom(room.id, {
+            type: 'voice-speaking',
+            roomId: room.id,
+            userId: msg.userId,
+            isSpeaking: msg.isSpeaking,
+          });
+        }
+        return;
+      }
+
       if (msg.type === 'leave-room') {
         handleClientLeave(ws);
       }
@@ -1361,6 +1491,22 @@ function handleClientLeave(ws: WebSocket) {
     if (clients.size === 0) {
       roomClients.delete(roomId);
     }
+  }
+
+  // Remove from voice participants if active
+  const vpMap = roomVoiceParticipants.get(roomId);
+  if (vpMap && userId && vpMap.has(userId)) {
+    vpMap.delete(userId);
+    broadcastToRoom(roomId, {
+      type: 'voice-user-left',
+      roomId,
+      userId,
+    });
+    broadcastToRoom(roomId, {
+      type: 'voice-participants-updated',
+      roomId,
+      participants: Array.from(vpMap.values()),
+    });
   }
 
   const room = rooms.get(roomId);

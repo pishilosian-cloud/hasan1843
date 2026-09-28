@@ -152,6 +152,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const iceServersRef = useRef<any[] | null>(null);
   const speechDetectorRef = useRef<{ audioContext: AudioContext; analyzer: AnalyserNode; javascriptNode: ScriptProcessorNode; stream: MediaStream } | null>(null);
   const voiceStateRef = useRef<VoiceState>(voiceState);
+  const pendingCandidatesRef = useRef<{ [userId: string]: RTCIceCandidate[] }>({});
 
   useEffect(() => {
     voiceStateRef.current = voiceState;
@@ -358,7 +359,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
 
       if (voiceStateRef.current.isCallActive && data.userId !== currentUser.id && data.isCallActive) {
-        initiatePeerConnection(data.userId);
+        // Glare prevention: only the peer with the lexicographically smaller ID initiates the offer
+        if (currentUser.id < data.userId) {
+          initiatePeerConnection(data.userId);
+        }
       }
     });
 
@@ -928,6 +932,21 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return pc;
   };
 
+  const processQueuedCandidates = async (userId: string, pc: RTCPeerConnection) => {
+    const queue = pendingCandidatesRef.current[userId];
+    if (queue && queue.length > 0) {
+      console.log(`[WebRTC] Applying ${queue.length} queued ICE candidates for ${userId}`);
+      for (const candidate of queue) {
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (e) {
+          console.warn('[WebRTC] Failed to apply queued candidate:', e);
+        }
+      }
+      delete pendingCandidatesRef.current[userId];
+    }
+  };
+
   const handleIncomingVoiceSignal = async (senderId: string, signal: any) => {
     if (!activeRoom) return;
 
@@ -957,17 +976,29 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           type: 'answer',
           sdp: pc.localDescription?.sdp,
         });
+
+        await processQueuedCandidates(senderId, pc);
       } else if (signal.type === 'answer') {
         console.log(`[WebRTC] Received incoming answer from ${senderId}`);
         if (pc) {
           await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+          await processQueuedCandidates(senderId, pc);
         }
       } else if (signal.type === 'candidate') {
         if (pc && signal.candidate) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-          } catch (e) {
-            console.warn('[WebRTC] Failed to add candidate:', e);
+          const iceCandidate = new RTCIceCandidate(signal.candidate);
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            try {
+              await pc.addIceCandidate(iceCandidate);
+            } catch (e) {
+              console.warn('[WebRTC] Failed to add candidate directly:', e);
+            }
+          } else {
+            if (!pendingCandidatesRef.current[senderId]) {
+              pendingCandidatesRef.current[senderId] = [];
+            }
+            pendingCandidatesRef.current[senderId].push(iceCandidate);
+            console.log(`[WebRTC] Queued incoming ICE candidate from ${senderId} (remoteDesc not ready)`);
           }
         }
       }
@@ -1144,7 +1175,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         members.forEach((m) => {
           if (m.id !== currentUser.id && m.isVoiceActive) {
-            initiatePeerConnection(m.id);
+            // Glare prevention: only the peer with the lexicographically smaller ID initiates the offer
+            if (currentUser.id < m.id) {
+              initiatePeerConnection(m.id);
+            }
           }
         });
 

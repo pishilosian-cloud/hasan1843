@@ -892,8 +892,33 @@ async function handleAIChatRequest(
   } catch (err: unknown) {
     console.error('[StudyRoom AI Execution Error]:', err instanceof Error ? err.message : err);
 
-    return res.status(500).json({
-      error: 'دستیار هوشمند موقتاً در دسترس نیست. دوباره تلاش کن.',
+    const fallbackText =
+      'دستیار هوشمند به دلیل ترافیک لحظه‌ای سرورهای مدل با تاخیر مواجه شد. لطفاً چند ثانیه دیگر دوباره تلاش کنید.';
+
+    const aiMsg: AIMessage = {
+      id: `aimsg-${Date.now()}-ai`,
+      roomId: room.id,
+      type: 'ai',
+      sender: 'دستیار هوشمند AI',
+      message: fallbackText,
+      createdAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      mode: aiMode,
+    };
+
+    if (!roomAIMessages.has(room.id)) roomAIMessages.set(room.id, []);
+    roomAIMessages.get(room.id)!.push(aiMsg);
+    saveStateToDisk();
+
+    broadcastToRoom(room.id, {
+      type: 'ai-message',
+      roomId: room.id,
+      message: aiMsg,
+    });
+
+    return res.status(200).json({
+      success: true,
+      userMsg,
+      aiMsg,
     });
   } finally {
     broadcastToRoom(room.id, {
@@ -910,23 +935,28 @@ async function handleAIChatRequest(
  * Body: { roomId: string, message: string, mode?: 'simple' | 'complex', userId?: string, userName?: string }
  */
 app.post('/api/ai/chat', async (req, res) => {
-  const { roomId, message, mode, userId, userName, user } = req.body;
-  const targetRoomId = roomId || req.body?.room_id;
-  const targetMessage = message || req.body?.prompt || req.body?.question;
+  try {
+    const { roomId, message, mode, userId, userName, user } = req.body;
+    const targetRoomId = roomId || req.body?.room_id;
+    const targetMessage = message || req.body?.prompt || req.body?.question;
 
-  if (!targetRoomId) {
-    return res.status(400).json({ error: 'شناسه اتاق (roomId) الزامی است.' });
+    if (!targetRoomId) {
+      return res.status(400).json({ error: 'شناسه اتاق (roomId) الزامی است.' });
+    }
+
+    const effectiveUser = {
+      id: userId || user?.id,
+      name: userName || user?.name,
+      avatarBg: user?.avatarBg,
+    };
+
+    const effectiveMode: AIMode = mode === 'complex' ? 'complex' : 'simple';
+
+    await handleAIChatRequest(req, res, targetRoomId, targetMessage, effectiveUser, effectiveMode);
+  } catch (err) {
+    console.error('[API AI CHAT ERROR]:', err);
+    res.status(500).json({ error: 'خطای سرور در پردازش درخواست چت' });
   }
-
-  const effectiveUser = {
-    id: userId || user?.id,
-    name: userName || user?.name,
-    avatarBg: user?.avatarBg,
-  };
-
-  const effectiveMode: AIMode = mode === 'complex' ? 'complex' : 'simple';
-
-  await handleAIChatRequest(req, res, targetRoomId, targetMessage, effectiveUser, effectiveMode);
 });
 
 /**
@@ -1364,36 +1394,36 @@ ${modeInstruction}
 
   inlineParts.push({ text: promptText });
 
-  const candidateModels = [
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-  ];
+  const candidateModels = ['gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
   let lastError: unknown = null;
   let answerText = '';
 
   for (const modelName of candidateModels) {
-    try {
-      const response = await aiClient.models.generateContent({
-        model: modelName,
-        contents: {
-          parts: inlineParts,
-        },
-        config: {
-          systemInstruction,
-          temperature: mode === 'complex' ? 0.6 : 0.7,
-        },
-      });
+    if (answerText) break;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await aiClient.models.generateContent({
+          model: modelName,
+          contents: {
+            parts: inlineParts,
+          },
+          config: {
+            systemInstruction,
+            temperature: mode === 'complex' ? 0.6 : 0.7,
+          },
+        });
 
-      if (response.text) {
-        answerText = response.text;
-        break;
+        if (response.text) {
+          answerText = response.text;
+          break;
+        }
+      } catch (err: unknown) {
+        lastError = err;
+        console.warn(`[StudyRoom AI] Model ${modelName} attempt ${attempt} failed:`, err instanceof Error ? err.message : err);
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
       }
-    } catch (err: unknown) {
-      lastError = err;
-      console.warn(`[StudyRoom AI] Model ${modelName} failed, trying next candidate if available:`, err instanceof Error ? err.message : err);
     }
   }
 

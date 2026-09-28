@@ -7,6 +7,7 @@ export interface User {
   isSpeaking: boolean;
   isMuted: boolean;
   role: 'host' | 'member';
+  isVoiceActive?: boolean;
 }
 
 export interface Room {
@@ -131,6 +132,8 @@ export type WSClientMessage =
   | { type: 'leave-room'; roomId: string; userId: string }
   | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string }; mode?: AIMode }
   | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string } }
+  | { type: 'voice-state-update'; roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }
+  | { type: 'voice-signal'; roomId: string; senderId: string; targetUserId: string; signal: any }
   | { type: 'ping' };
 
 export type WSServerMessage =
@@ -165,5 +168,7 @@ export type WSServerMessage =
   | { type: 'presence-update'; roomId: string; members: RoomMember[] }
   | { type: 'user-joined'; roomId: string; member: RoomMember }
   | { type: 'user-left'; roomId: string; userId: string }
+  | { type: 'voice-state-update'; roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }
+  | { type: 'voice-signal'; roomId: string; senderId: string; targetUserId: string; signal: any }
   | { type: 'error'; message: string }
   | { type: 'pong' };

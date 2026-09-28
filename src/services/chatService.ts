@@ -65,6 +65,8 @@ class ChatService {
   }) => void>();
   private statusListeners = new Set<StatusHandler>();
   private errorListeners = new Set<ErrorHandler>();
+  private voiceStateListeners = new Set<(data: { roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }) => void>();
+  private voiceSignalListeners = new Set<(data: { roomId: string; senderId: string; targetUserId: string; signal: any }) => void>();
 
   private updateStatus(newStatus: ConnectionStatus) {
     if (this.status !== newStatus) {
@@ -286,6 +288,20 @@ class ChatService {
           if (data.type === 'presence-update') {
             if (data.roomId === this.currentRoomId) {
               this.presenceListeners.forEach((fn) => fn(data.members));
+            }
+            return;
+          }
+
+          if (data.type === 'voice-state-update') {
+            if (data.roomId === this.currentRoomId) {
+              this.voiceStateListeners.forEach((fn) => fn(data));
+            }
+            return;
+          }
+
+          if (data.type === 'voice-signal') {
+            if (data.roomId === this.currentRoomId) {
+              this.voiceSignalListeners.forEach((fn) => fn(data));
             }
             return;
           }
@@ -754,6 +770,37 @@ class ChatService {
   public onError(listener: ErrorHandler) {
     this.errorListeners.add(listener);
     return () => this.errorListeners.delete(listener);
+  }
+
+  public sendVoiceStateUpdate(roomId: string, userId: string, isCallActive: boolean, isMuted?: boolean, isSpeaking?: boolean) {
+    this.sendWS({
+      type: 'voice-state-update',
+      roomId,
+      userId,
+      isCallActive,
+      isMuted,
+      isSpeaking,
+    });
+  }
+
+  public sendVoiceSignal(roomId: string, senderId: string, targetUserId: string, signal: any) {
+    this.sendWS({
+      type: 'voice-signal',
+      roomId,
+      senderId,
+      targetUserId,
+      signal,
+    });
+  }
+
+  public onVoiceStateUpdate(fn: (data: { roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }) => void) {
+    this.voiceStateListeners.add(fn);
+    return () => this.voiceStateListeners.delete(fn);
+  }
+
+  public onVoiceSignal(fn: (data: { roomId: string; senderId: string; targetUserId: string; signal: any }) => void) {
+    this.voiceSignalListeners.add(fn);
+    return () => this.voiceSignalListeners.delete(fn);
   }
 }
 

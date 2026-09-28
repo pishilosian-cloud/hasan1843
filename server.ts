@@ -1342,6 +1342,28 @@ app.get('/api/rooms/:roomId/pamphlets/search', (req, res) => {
   res.json({ count: results.length, results });
 });
 
+// 7. Get WebRTC Dynamic ICE Servers (Secure, Server-managed STUN/TURN)
+app.get('/api/voice/ice-servers', (req, res) => {
+  const stunUrls = process.env.STUN_SERVERS
+    ? process.env.STUN_SERVERS.split(',').map((s) => s.trim())
+    : ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'];
+
+  const iceServers: any[] = [
+    { urls: stunUrls }
+  ];
+
+  if (process.env.TURN_SERVER || process.env.TURN_SERVERS) {
+    const turnUrl = process.env.TURN_SERVER || process.env.TURN_SERVERS || '';
+    iceServers.push({
+      urls: [turnUrl.trim()],
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || '',
+    });
+  }
+
+  res.json({ iceServers });
+});
+
 /**
  * Generate Answer using Gemini 3.8 Flash
  * - Search relevant chunks with strict Room Isolation
@@ -1744,6 +1766,48 @@ wss.on('connection', (ws: WebSocket) => {
             roomId: room.id,
             isThinking: false,
           });
+        }
+        return;
+      }
+
+      if (msg.type === 'voice-state-update') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room) return;
+
+        broadcastToRoom(room.id, {
+          type: 'voice-state-update',
+          roomId: room.id,
+          userId: msg.userId,
+          isSpeaking: msg.isSpeaking,
+          isMuted: msg.isMuted,
+          isCallActive: msg.isCallActive,
+        });
+        return;
+      }
+
+      if (msg.type === 'voice-signal') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room) return;
+
+        const clients = roomClients.get(room.id);
+        if (clients) {
+          const payload = JSON.stringify({
+            type: 'voice-signal',
+            roomId: room.id,
+            senderId: msg.senderId,
+            targetUserId: msg.targetUserId,
+            signal: msg.signal,
+          });
+
+          for (const client of clients) {
+            const meta = clientMetadata.get(client);
+            if (meta && meta.userId === msg.targetUserId) {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(payload);
+              }
+              break;
+            }
+          }
         }
         return;
       }

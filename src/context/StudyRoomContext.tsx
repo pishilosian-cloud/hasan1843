@@ -146,6 +146,17 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('studyroom_ai_mode', mode);
   };
 
+  const peerConnectionsRef = useRef<{ [userId: string]: RTCPeerConnection }>({});
+  const audioElementsRef = useRef<{ [userId: string]: HTMLAudioElement }>({});
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const iceServersRef = useRef<any[] | null>(null);
+  const speechDetectorRef = useRef<{ audioContext: AudioContext; analyzer: AnalyserNode; javascriptNode: ScriptProcessorNode; stream: MediaStream } | null>(null);
+  const voiceStateRef = useRef<VoiceState>(voiceState);
+
+  useEffect(() => {
+    voiceStateRef.current = voiceState;
+  }, [voiceState]);
+
   const showToast = useCallback((text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ text, type });
     setTimeout(() => {
@@ -331,6 +342,31 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       showToast(errMsg, 'error');
     });
 
+    const unsubVoiceState = chatService.onVoiceStateUpdate((data) => {
+      setMembers((prev) =>
+        prev.map((m) => {
+          if (m.id === data.userId) {
+            return {
+              ...m,
+              isSpeaking: data.isSpeaking ?? m.isSpeaking,
+              isMuted: data.isMuted ?? m.isMuted,
+              isVoiceActive: data.isCallActive,
+            };
+          }
+          return m;
+        })
+      );
+
+      if (voiceStateRef.current.isCallActive && data.userId !== currentUser.id && data.isCallActive) {
+        initiatePeerConnection(data.userId);
+      }
+    });
+
+    const unsubVoiceSignal = chatService.onVoiceSignal((data) => {
+      if (data.targetUserId !== currentUser.id) return;
+      handleIncomingVoiceSignal(data.senderId, data.signal);
+    });
+
     return () => {
       unsubInit();
       unsubNewMsg();
@@ -343,6 +379,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubPresence();
       unsubStatus();
       unsubError();
+      unsubVoiceState();
+      unsubVoiceSignal();
     };
   }, [currentUser.id, mapMembersToUsers, showToast]);
 
@@ -631,6 +669,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const leaveRoom = () => {
+    cleanupVoiceCall();
     chatService.leaveRoom();
     setActiveRoom(null);
     setPendingRoomId(null);
@@ -799,43 +838,358 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  const toggleVoiceCall = () => {
+  const initiatePeerConnection = async (targetUserId: string) => {
+    if (peerConnectionsRef.current[targetUserId]) {
+      return;
+    }
+
+    try {
+      console.log(`[WebRTC] Initiating PeerConnection to target user: ${targetUserId}`);
+      const pc = await createPeerConnection(targetUserId);
+      peerConnectionsRef.current[targetUserId] = pc;
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStreamRef.current!);
+        });
+      }
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      if (activeRoom) {
+        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, targetUserId, {
+          type: 'offer',
+          sdp: pc.localDescription?.sdp,
+        });
+      }
+    } catch (err) {
+      console.error(`[WebRTC] Failed to initiate PeerConnection to ${targetUserId}:`, err);
+    }
+  };
+
+  const createPeerConnection = async (targetUserId: string): Promise<RTCPeerConnection> => {
+    if (!iceServersRef.current) {
+      try {
+        const res = await fetch('/api/voice/ice-servers');
+        if (res.ok) {
+          const data = await res.json();
+          iceServersRef.current = data.iceServers;
+          console.log('[WebRTC] Dynamically fetched ICE configuration from server:', data.iceServers);
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Failed to fetch server ICE configurations, falling back to Google STUN:', err);
+      }
+    }
+
+    const config = {
+      iceServers: iceServersRef.current || [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+      ]
+    };
+
+    const pc = new RTCPeerConnection(config);
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && activeRoom) {
+        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, targetUserId, {
+          type: 'candidate',
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC] ICE Connection State to ${targetUserId}: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        console.log(`[WebRTC] ICE Connection failed/disconnected for ${targetUserId}. Attempting reconnect...`);
+        handlePeerDisconnect(targetUserId);
+      } else if (pc.iceConnectionState === 'connected') {
+        pc.getStats().then((stats) => {
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+              const localCandidate = stats.get(report.localCandidateId);
+              const remoteCandidate = stats.get(report.remoteCandidateId);
+              if (localCandidate && remoteCandidate) {
+                console.log(`[WebRTC Diagnostic] Peer ${targetUserId} ICE link established via: Local=${localCandidate.candidateType} (${localCandidate.protocol}) | Remote=${remoteCandidate.candidateType}`);
+              }
+            }
+          });
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      console.log(`[WebRTC] Received remote audio track from ${targetUserId}`);
+      const remoteStream = event.streams[0];
+      playRemoteStream(targetUserId, remoteStream);
+    };
+
+    return pc;
+  };
+
+  const handleIncomingVoiceSignal = async (senderId: string, signal: any) => {
+    if (!activeRoom) return;
+
+    try {
+      let pc = peerConnectionsRef.current[senderId];
+
+      if (signal.type === 'offer') {
+        console.log(`[WebRTC] Received incoming offer from ${senderId}`);
+        if (pc) {
+          try { pc.close(); } catch {}
+        }
+
+        pc = await createPeerConnection(senderId);
+        peerConnectionsRef.current[senderId] = pc;
+
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((track) => {
+            pc.addTrack(track, localStreamRef.current!);
+          });
+        }
+
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, senderId, {
+          type: 'answer',
+          sdp: pc.localDescription?.sdp,
+        });
+      } else if (signal.type === 'answer') {
+        console.log(`[WebRTC] Received incoming answer from ${senderId}`);
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+        }
+      } else if (signal.type === 'candidate') {
+        if (pc && signal.candidate) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } catch (e) {
+            console.warn('[WebRTC] Failed to add candidate:', e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[WebRTC] Error handling signal from ${senderId}:`, err);
+    }
+  };
+
+  const handlePeerDisconnect = (userId: string) => {
+    const pc = peerConnectionsRef.current[userId];
+    if (pc) {
+      try { pc.close(); } catch {}
+      delete peerConnectionsRef.current[userId];
+    }
+    stopRemoteStream(userId);
+
+    if (voiceStateRef.current.isCallActive) {
+      setTimeout(() => {
+        if (voiceStateRef.current.isCallActive) {
+          console.log(`[WebRTC] Attempting to reconnect PeerConnection for ${userId}...`);
+          initiatePeerConnection(userId);
+        }
+      }, 3000);
+    }
+  };
+
+  const playRemoteStream = (userId: string, stream: MediaStream) => {
+    let audio = audioElementsRef.current[userId];
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.setAttribute('data-user-id', userId);
+      document.body.appendChild(audio);
+      audioElementsRef.current[userId] = audio;
+    }
+    audio.srcObject = stream;
+    audio.play().catch((err) => console.warn('[WebRTC] Audio element play failed:', err));
+  };
+
+  const stopRemoteStream = (userId: string) => {
+    const audio = audioElementsRef.current[userId];
+    if (audio) {
+      audio.srcObject = null;
+      audio.remove();
+      delete audioElementsRef.current[userId];
+    }
+  };
+
+  const setupSpeechDetector = (stream: MediaStream) => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      const audioContext = new AudioContextClass();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyzer = audioContext.createAnalyser();
+      analyzer.fftSize = 512;
+      source.connect(analyzer);
+
+      const javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+      analyzer.connect(javascriptNode);
+      javascriptNode.connect(audioContext.destination);
+
+      let isSpeakingLocal = false;
+      let silentTicks = 0;
+
+      javascriptNode.onaudioprocess = () => {
+        const array = new Uint8Array(analyzer.frequencyBinCount);
+        analyzer.getByteFrequencyData(array);
+        let values = 0;
+        const length = array.length;
+        for (let i = 0; i < length; i++) {
+          values += array[i];
+        }
+        const average = values / length;
+        
+        const threshold = 18; 
+        const currentlySpeaking = average > threshold;
+
+        if (currentlySpeaking) {
+          silentTicks = 0;
+          if (!isSpeakingLocal) {
+            isSpeakingLocal = true;
+            updateSpeakingState(true);
+          }
+        } else {
+          silentTicks++;
+          if (silentTicks > 15 && isSpeakingLocal) {
+            isSpeakingLocal = false;
+            updateSpeakingState(false);
+          }
+        }
+      };
+
+      speechDetectorRef.current = { audioContext, analyzer, javascriptNode, stream };
+    } catch (e) {
+      console.warn('Failed to setup speech detection:', e);
+    }
+  };
+
+  const updateSpeakingState = (isSpeaking: boolean) => {
+    if (!activeRoom) return;
+    
+    setMembers((prev) =>
+      prev.map((m) => (m.id === currentUser.id ? { ...m, isSpeaking } : m))
+    );
+
+    chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, voiceStateRef.current.isMuted, isSpeaking);
+  };
+
+  const cleanupVoiceCall = () => {
+    Object.keys(peerConnectionsRef.current).forEach((userId) => {
+      const pc = peerConnectionsRef.current[userId];
+      if (pc) {
+        try { pc.close(); } catch {}
+      }
+      stopRemoteStream(userId);
+    });
+    peerConnectionsRef.current = {};
+
+    if (speechDetectorRef.current) {
+      try {
+        speechDetectorRef.current.javascriptNode.disconnect();
+        speechDetectorRef.current.analyzer.disconnect();
+        speechDetectorRef.current.audioContext.close();
+      } catch {}
+      speechDetectorRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        try { track.stop(); } catch {}
+      });
+      localStreamRef.current = null;
+    }
+  };
+
+  const toggleVoiceCall = async () => {
+    if (!activeRoom) return;
+
     if (voiceState.isCallActive) {
+      cleanupVoiceCall();
       setVoiceState({
         isCallActive: false,
         isMuted: false,
         isConnecting: false,
         activeSpeakers: [],
       });
+      chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, false, false, false);
       showToast('تماس صوتی پایان یافت.', 'info');
     } else {
       setVoiceState((prev) => ({ ...prev, isConnecting: true }));
-      setTimeout(() => {
+      
+      try {
+        console.log('[WebRTC] Requesting microphone access...');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
+          console.error('[WebRTC] Mic permission denied:', err);
+          throw new Error('PERMISSION_DENIED');
+        });
+
+        localStreamRef.current = stream;
+        setupSpeechDetector(stream);
+
         setVoiceState({
           isCallActive: true,
           isMuted: false,
           isConnecting: false,
-          connectedAt: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
-          activeSpeakers: ['user-2'],
+          connectedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
+          activeSpeakers: [],
         });
-        showToast('به تماس صوتی اتاق پیوستید.');
-      }, 800);
+
+        chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
+        showToast('به تماس صوتی اتاق پیوستید.', 'success');
+
+        members.forEach((m) => {
+          if (m.id !== currentUser.id && m.isVoiceActive) {
+            initiatePeerConnection(m.id);
+          }
+        });
+
+      } catch (err: any) {
+        setVoiceState({
+          isCallActive: false,
+          isMuted: false,
+          isConnecting: false,
+          activeSpeakers: [],
+        });
+
+        if (err.message === 'PERMISSION_DENIED') {
+          showToast('برای استفاده از تماس صوتی باید اجازه دسترسی به میکروفون را فعال کنید.', 'error');
+        } else {
+          showToast('خطایی در راه‌اندازی سخت‌افزار میکروفون پیش آمد. لطفاً اتصال دستگاه خود را بررسی کنید.', 'error');
+        }
+      }
     }
   };
 
   const toggleMicrophone = () => {
+    if (!activeRoom) return;
+
     setVoiceState((prev) => {
       const nextMuted = !prev.isMuted;
+      
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach((track) => {
+          track.enabled = !nextMuted;
+        });
+      }
+
       showToast(nextMuted ? 'میکروفون خاموش شد' : 'میکروفون روشن شد', nextMuted ? 'info' : 'success');
+      
+      setMembers((prevMembers) =>
+        prevMembers.map((m) => (m.id === currentUser.id ? { ...m, isMuted: nextMuted } : m))
+      );
+
+      chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, nextMuted, false);
+
       return {
         ...prev,
         isMuted: nextMuted,
       };
     });
-
-    setMembers((prev) =>
-      prev.map((m) => (m.id === currentUser.id ? { ...m, isMuted: !m.isMuted } : m))
-    );
   };
 
   const fallbackCopyText = (text: string) => {

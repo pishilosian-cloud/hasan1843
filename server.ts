@@ -55,6 +55,11 @@ function getGeminiClient(): GoogleGenAI | null {
 
   return new GoogleGenAI({
     apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
   });
 }
 
@@ -1441,7 +1446,13 @@ ${modeInstruction}
 
   inlineParts.push({ text: promptText });
 
-  const candidateModels = ['gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+  const candidateModels = [
+    'gemini-3.5-flash',
+    'gemini-flash-latest',
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.1-flash-lite'
+  ];
   let lastError: unknown = null;
   let answerText = '';
 

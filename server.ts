@@ -1019,6 +1019,13 @@ app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (re
   const ext = path.extname(originalName).replace('.', '').toUpperCase() || 'FILE';
   const targetPath = pamphletProcessor.getUploadPath(room.id, fileId, originalName);
 
+  const formattedSize =
+    req.file.size < 1024 * 1024
+      ? `${(req.file.size / 1024).toFixed(0)} کیلوبایت`
+      : `${(req.file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+  console.log(`[PAMPHLET LOG] FILE_RECEIVED roomId=${room.id} fileId=${fileId} name="${originalName}" size=${formattedSize}`);
+
   try {
     fs.renameSync(req.file.path, targetPath);
   } catch {
@@ -1026,10 +1033,7 @@ app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (re
     try { fs.unlinkSync(req.file.path); } catch {}
   }
 
-  const formattedSize =
-    req.file.size < 1024 * 1024
-      ? `${(req.file.size / 1024).toFixed(0)} کیلوبایت`
-      : `${(req.file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
+  console.log(`[PAMPHLET LOG] FILE_STORED path=${targetPath}`);
 
   const newPamphlet: PamphletFile = {
     id: fileId,
@@ -1073,34 +1077,30 @@ app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (re
   saveJobCheckpoint(job);
 
   // Background Async Processing: won't timeout the HTTP upload request!
-  pamphletProcessor.processDocument(
-    job,
-    (progress) => {
-      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
-      if (p) {
-        p.status = progress.status;
-        p.processedPages = progress.current;
-        p.pagesCount = progress.total;
-        p.progressPercent = progress.percent;
-        p.error = progress.error;
-      }
-      saveStateToDisk();
+  pamphletProcessor.processDocument(job, (progress) => {
+    const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+    if (p) {
+      p.status = progress.status;
+      p.processedPages = progress.current;
+      p.pagesCount = progress.total;
+      p.progressPercent = progress.percent;
+      p.error = progress.error;
+    }
+    saveStateToDisk();
 
-      broadcastToRoom(room.id, {
-        type: 'pamphlet-progress',
-        roomId: room.id,
-        fileId,
-        fileName: originalName,
-        status: progress.status,
-        current: progress.current,
-        total: progress.total,
-        percent: progress.percent,
-        error: progress.error,
-      });
-    },
-    getGeminiClient()
-  ).catch((err) => {
-    console.error(`[Upload Processing Error for ${fileId}]:`, err);
+    broadcastToRoom(room.id, {
+      type: 'pamphlet-progress',
+      roomId: room.id,
+      fileId,
+      fileName: originalName,
+      status: progress.status,
+      current: progress.current,
+      total: progress.total,
+      percent: progress.percent,
+      error: progress.error,
+    });
+  }).catch((err) => {
+    console.error(`[PAMPHLET LOG ERROR] Upload Processing Error for ${fileId}:`, err);
   });
 
   res.status(201).json(newPamphlet);
@@ -1177,33 +1177,29 @@ app.post('/api/rooms/:roomId/pamphlets', async (req, res) => {
 
   saveJobCheckpoint(job);
 
-  pamphletProcessor.processDocument(
-    job,
-    (progress) => {
-      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
-      if (p) {
-        p.status = progress.status;
-        p.processedPages = progress.current;
-        p.pagesCount = progress.total;
-        p.progressPercent = progress.percent;
-        p.error = progress.error;
-      }
-      saveStateToDisk();
+  pamphletProcessor.processDocument(job, (progress) => {
+    const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+    if (p) {
+      p.status = progress.status;
+      p.processedPages = progress.current;
+      p.pagesCount = progress.total;
+      p.progressPercent = progress.percent;
+      p.error = progress.error;
+    }
+    saveStateToDisk();
 
-      broadcastToRoom(room.id, {
-        type: 'pamphlet-progress',
-        roomId: room.id,
-        fileId,
-        fileName: originalName,
-        status: progress.status,
-        current: progress.current,
-        total: progress.total,
-        percent: progress.percent,
-        error: progress.error,
-      });
-    },
-    getGeminiClient()
-  ).catch((err) => {
+    broadcastToRoom(room.id, {
+      type: 'pamphlet-progress',
+      roomId: room.id,
+      fileId,
+      fileName: originalName,
+      status: progress.status,
+      current: progress.current,
+      total: progress.total,
+      percent: progress.percent,
+      error: progress.error,
+    });
+  }).catch((err) => {
     console.error(`[Base64 Upload Processing Error]:`, err);
   });
 
@@ -1230,23 +1226,19 @@ app.post('/api/rooms/:roomId/pamphlets/:fileId/resume', async (req, res) => {
     return res.status(404).json({ error: 'پردازش این فایل پیدا نشد' });
   }
 
-  pamphletProcessor.processDocument(
-    job,
-    (progress) => {
-      broadcastToRoom(room.id, {
-        type: 'pamphlet-progress',
-        roomId: room.id,
-        fileId: job.fileId,
-        fileName: job.fileName,
-        status: progress.status,
-        current: progress.current,
-        total: progress.total,
-        percent: progress.percent,
-        error: progress.error,
-      });
-    },
-    getGeminiClient()
-  ).catch((err) => console.error('Resume error:', err));
+  pamphletProcessor.processDocument(job, (progress) => {
+    broadcastToRoom(room.id, {
+      type: 'pamphlet-progress',
+      roomId: room.id,
+      fileId: job.fileId,
+      fileName: job.fileName,
+      status: progress.status,
+      current: progress.current,
+      total: progress.total,
+      percent: progress.percent,
+      error: progress.error,
+    });
+  }).catch((err) => console.error('Resume error:', err));
 
   res.json({ message: 'پردازش مجدداً فعال شد', job });
 });

@@ -55,11 +55,12 @@ class ChatService {
     fileId: string;
     roomId: string;
     fileName: string;
-    status: 'processing' | 'ready' | 'error';
+    status: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
     current: number;
     total: number;
     percent: number;
     error?: string;
+    errorCode?: string;
   }) => void>();
   private statusListeners = new Set<StatusHandler>();
   private errorListeners = new Set<ErrorHandler>();
@@ -545,11 +546,12 @@ class ChatService {
       fileId: string;
       roomId: string;
       fileName: string;
-      status: 'processing' | 'ready' | 'error';
+      status: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
       current: number;
       total: number;
       percent: number;
       error?: string;
+      errorCode?: string;
     }) => void
   ): () => void {
     this.pamphletProgressListeners.add(fn);

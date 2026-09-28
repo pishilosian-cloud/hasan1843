@@ -282,7 +282,7 @@ export const AIPanel: React.FC = () => {
                       <span className="flex items-center gap-1">
                         <Loader2 className="w-3 h-3 animate-spin" />
                         <span>
-                          در حال پردازش جزوه...
+                          در حال پردازش و استخراج...
                           {item.pagesCount ? ` صفحه ${item.processedPages || 0} از ${item.pagesCount}` : ''}
                         </span>
                       </span>
@@ -295,15 +295,32 @@ export const AIPanel: React.FC = () => {
                       />
                     </div>
                   </div>
-                ) : item.status === 'error' ? (
-                  <div className="mt-1 pt-1 border-t border-rose-100 dark:border-rose-950/40 flex items-center justify-between text-[10px] text-rose-600 dark:text-rose-400">
-                    <span>خطا در پردازش جزوه</span>
+                ) : item.status === 'scanned_ocr_required' ? (
+                  <div className="mt-1 pt-1 border-t border-amber-100 dark:border-amber-950/40 flex items-center justify-between text-[10px] text-amber-700 dark:text-amber-400">
+                    <span className="truncate max-w-[170px]" title="این PDF اسکن‌شده یا تصویری است و متن تایپی مستقیم ندارد.">
+                      فایل تصویری/اسکن‌شده (نیازمند OCR)
+                    </span>
                     <button
                       type="button"
                       onClick={() => {
                         fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
                       }}
-                      className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950 hover:bg-rose-100 cursor-pointer font-bold"
+                      className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 hover:bg-amber-200 cursor-pointer font-bold shrink-0"
+                    >
+                      تلاش مجدد
+                    </button>
+                  </div>
+                ) : item.status === 'error' ? (
+                  <div className="mt-1 pt-1 border-t border-rose-100 dark:border-rose-950/40 flex items-center justify-between text-[10px] text-rose-600 dark:text-rose-400">
+                    <span className="truncate max-w-[170px]" title={item.error || 'خطا در خواندن یا تفکیک متن فایل'}>
+                      {item.error || 'خطا در استخراج متن'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950 hover:bg-rose-100 cursor-pointer font-bold shrink-0"
                     >
                       تلاش مجدد
                     </button>

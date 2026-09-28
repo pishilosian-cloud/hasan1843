@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import mammoth from 'mammoth';
+import { PDFParse } from 'pdf-parse';
 import type { PamphletChunk, PamphletFile } from '../types';
-import { GoogleGenAI } from '@google/genai';
 
 export interface ProcessingJob {
   fileId: string;
@@ -13,8 +12,9 @@ export interface ProcessingJob {
   fileType: string;
   totalPages: number;
   processedPages: number;
-  status: 'processing' | 'ready' | 'error';
+  status: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
   error?: string;
+  errorCode?: string;
   totalChunks?: number;
   createdAt: string;
   updatedAt: string;
@@ -24,11 +24,12 @@ export type ProgressCallback = (progress: {
   fileId: string;
   roomId: string;
   fileName: string;
-  status: 'processing' | 'ready' | 'error';
+  status: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
   current: number;
   total: number;
   percent: number;
   error?: string;
+  errorCode?: string;
 }) => void;
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -46,7 +47,7 @@ function ensureDirectories() {
 }
 ensureDirectories();
 
-// Persian & English normalizer
+// Persian & English text normalizer
 export function normalizeText(text: string): string {
   if (!text) return '';
   return text
@@ -95,7 +96,7 @@ export function tokenize(text: string): string[] {
   return words;
 }
 
-// Split page text into overlapping chunks
+// Split page text into overlapping chunks preserving Room ID
 export function chunkPageText(
   pageText: string,
   metadata: {
@@ -113,7 +114,6 @@ export function chunkPageText(
   const chunks: PamphletChunk[] = [];
   let chunkIndex = 0;
 
-  // If page text is within reasonable size, keep as single chunk
   if (clean.length <= chunkSize + 150) {
     chunks.push({
       id: `${metadata.fileId}-p${metadata.pageNumber}-c0`,
@@ -128,7 +128,6 @@ export function chunkPageText(
     return chunks;
   }
 
-  // Split by paragraphs first
   const paragraphs = clean.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
   let currentBuffer = '';
 
@@ -201,7 +200,7 @@ export function saveJobCheckpoint(job: ProcessingJob): void {
   try {
     fs.writeFileSync(getJobFilePath(job.fileId), JSON.stringify(job, null, 2), 'utf-8');
   } catch (err) {
-    console.warn('Failed to save job checkpoint:', err);
+    console.warn('[PAMPHLET LOG] Failed to save job checkpoint:', err);
   }
 }
 
@@ -229,7 +228,7 @@ export function saveChunks(roomId: string, fileId: string, chunks: PamphletChunk
   try {
     fs.writeFileSync(p, JSON.stringify(chunks, null, 2), 'utf-8');
   } catch (err) {
-    console.warn('Failed to save chunks:', err);
+    console.warn('[PAMPHLET LOG] Failed to save chunks:', err);
   }
 }
 
@@ -261,7 +260,7 @@ export function loadAllChunksForRoom(roomId: string): PamphletChunk[] {
       }
     }
   } catch (err) {
-    console.error(`Failed to load chunks for room ${roomId}:`, err);
+    console.error(`[PAMPHLET LOG] Failed to load chunks for room ${roomId}:`, err);
   }
   return chunks;
 }
@@ -293,14 +292,14 @@ export class PamphletProcessor {
   }
 
   /**
-   * Start or resume document processing in background with progress callbacks
+   * Start or resume document processing in background with structured logging
    */
   public async processDocument(
     job: ProcessingJob,
-    onProgress?: ProgressCallback,
-    aiClient?: GoogleGenAI | null
+    onProgress?: ProgressCallback
   ): Promise<{ totalPages: number; totalChunks: number }> {
     if (this.activeJobs.get(job.fileId)) {
+      console.log(`[PAMPHLET LOG] PROCESSING_SKIPPED fileId=${job.fileId} reason=already_active`);
       return { totalPages: job.totalPages, totalChunks: job.totalChunks || 0 };
     }
 
@@ -308,40 +307,66 @@ export class PamphletProcessor {
     job.status = 'processing';
     saveJobCheckpoint(job);
 
+    console.log(`[PAMPHLET LOG] PROCESSING_STARTED fileId=${job.fileId} roomId=${job.roomId} fileName="${job.fileName}" path=${job.filePath}`);
+
     try {
+      if (!fs.existsSync(job.filePath)) {
+        throw new Error(`STORAGE_READ_FAILED: File not found at path ${job.filePath}`);
+      }
+
       const ext = path.extname(job.fileName).toLowerCase();
       let totalPages = job.totalPages || 0;
-      let allChunks = loadChunksForFile(job.roomId, job.fileId);
+      let allChunks: PamphletChunk[] = [];
+
+      console.log(`[PAMPHLET LOG] TEXT_EXTRACTION_STARTED fileId=${job.fileId} type=${ext}`);
 
       if (ext === '.pdf') {
-        const result = await this.processPdf(job, allChunks, onProgress);
+        const result = await this.processPdf(job, onProgress);
         totalPages = result.totalPages;
         allChunks = result.chunks;
       } else if (ext === '.docx' || ext === '.doc') {
         const result = await this.processDocx(job, onProgress);
         totalPages = result.totalPages;
         allChunks = result.chunks;
-      } else {
+      } else if (ext === '.txt' || ext === '.text') {
         const result = await this.processTxt(job, onProgress);
         totalPages = result.totalPages;
         allChunks = result.chunks;
+      } else {
+        throw new Error(`UNSUPPORTED_FILE: Extension ${ext} is not supported`);
       }
 
-      job.status = 'ready';
+      console.log(`[PAMPHLET LOG] TEXT_EXTRACTION_COMPLETED fileId=${job.fileId} totalPages=${totalPages}`);
+      console.log(`[PAMPHLET LOG] CHUNKING_COMPLETED fileId=${job.fileId} totalChunks=${allChunks.length}`);
+
+      if (allChunks.length === 0 && totalPages > 0) {
+        job.status = 'scanned_ocr_required';
+        job.errorCode = 'SCANNED_PDF_NEEDS_OCR';
+        job.error = 'این فایل اسکن‌شده/تصویری است و متن قابل استخراج متنی ندارد.';
+      } else {
+        job.status = 'ready';
+        job.errorCode = undefined;
+        job.error = undefined;
+      }
+
       job.totalPages = totalPages;
       job.processedPages = totalPages;
       job.totalChunks = allChunks.length;
       saveJobCheckpoint(job);
+
+      console.log(`[PAMPHLET LOG] PROCESSING_COMPLETED fileId=${job.fileId} status=${job.status} totalChunks=${allChunks.length}`);
 
       if (onProgress) {
         onProgress({
           fileId: job.fileId,
           roomId: job.roomId,
           fileName: job.fileName,
-          status: 'ready',
+          status: job.status,
           current: totalPages,
           total: totalPages,
           percent: 100,
+          error: job.error,
+          errorCode: job.errorCode,
         });
       }
 
@@ -350,8 +375,19 @@ export class PamphletProcessor {
     } catch (err: unknown) {
       this.activeJobs.delete(job.fileId);
       const errMsg = err instanceof Error ? err.message : String(err);
+      
+      let errorCode = 'PROCESSING_FAILED';
+      if (errMsg.includes('STORAGE_READ_FAILED')) errorCode = 'STORAGE_READ_FAILED';
+      else if (errMsg.includes('UNSUPPORTED_FILE')) errorCode = 'UNSUPPORTED_FILE';
+      else if (errMsg.includes('DOCX_EXTRACTION_FAILED')) errorCode = 'DOCX_EXTRACTION_FAILED';
+      else if (errMsg.includes('PDF_EXTRACTION_FAILED')) errorCode = 'PDF_EXTRACTION_FAILED';
+      else if (errMsg.includes('FILE_EMPTY')) errorCode = 'FILE_EMPTY';
+
+      console.error(`[PAMPHLET LOG ERROR] PROCESSING_FAILED fileId=${job.fileId} code=${errorCode} message=${errMsg}`, err);
+
       job.status = 'error';
       job.error = errMsg;
+      job.errorCode = errorCode;
       saveJobCheckpoint(job);
 
       if (onProgress) {
@@ -364,6 +400,7 @@ export class PamphletProcessor {
           total: job.totalPages || 1,
           percent: 0,
           error: errMsg,
+          errorCode,
         });
       }
       throw err;
@@ -371,67 +408,38 @@ export class PamphletProcessor {
   }
 
   /**
-   * High-Speed PDF processor: extracts Persian, Arabic & English digital text
-   * Uses CMaps and standard font mappings for 100% accurate Persian character glyphs.
+   * PDF processor using cross-platform pure TypeScript/Node PDFParse
+   * Runs natively in Node.js / Railway without browser DOM or worker threads.
    */
   private async processPdf(
     job: ProcessingJob,
-    existingChunks: PamphletChunk[],
     onProgress?: ProgressCallback
   ): Promise<{ totalPages: number; chunks: PamphletChunk[] }> {
-    const fileBytes = fs.readFileSync(job.filePath);
-    const uint8Array = new Uint8Array(fileBytes);
+    try {
+      const fileBytes = fs.readFileSync(job.filePath);
+      const uint8Array = new Uint8Array(fileBytes);
 
-    const cMapUrl = path.join(process.cwd(), 'node_modules/pdfjs-dist/cmaps/');
-    const standardFontDataUrl = path.join(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts/');
-
-    const loadingTask = pdfjs.getDocument({
-      data: uint8Array,
-      cMapUrl: cMapUrl.endsWith('/') ? cMapUrl : cMapUrl + '/',
-      cMapPacked: true,
-      standardFontDataUrl: standardFontDataUrl.endsWith('/') ? standardFontDataUrl : standardFontDataUrl + '/',
-      useSystemFonts: true,
-      disableFontFace: true,
-    });
-
-    const doc = await loadingTask.promise;
-    const totalPages = doc.numPages || 1;
-    job.totalPages = totalPages;
-
-    const processedPageSet = new Set(existingChunks.map((c) => c.pageNumber));
-    let currentProcessedCount = processedPageSet.size;
-    const chunks = [...existingChunks];
-
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      if (processedPageSet.has(pageNum)) {
-        continue;
+      if (uint8Array.length === 0) {
+        throw new Error('FILE_EMPTY: PDF file is zero bytes');
       }
 
-      try {
-        const page = await doc.getPage(pageNum);
-        const textContent = await page.getTextContent();
+      const parser = new PDFParse(uint8Array);
+      const parsed = await parser.getText();
 
-        let pageText = '';
-        let lastY: number | null = null;
+      const pages = parsed.pages || [];
+      const totalPages = parsed.total || pages.length || 1;
+      job.totalPages = totalPages;
 
-        for (const item of textContent.items as any[]) {
-          if ('str' in item && typeof item.str === 'string') {
-            const str = item.str.trim();
-            if (str.length > 0) {
-              if (lastY !== null && Math.abs(item.transform[5] - lastY) > 6) {
-                pageText += '\n' + item.str;
-              } else {
-                pageText += (pageText.endsWith(' ') || pageText.endsWith('\n') || !pageText ? '' : ' ') + item.str;
-              }
-              lastY = item.transform[5];
-            }
-          }
-        }
+      const chunks: PamphletChunk[] = [];
+      let processedCount = 0;
 
-        pageText = pageText.trim();
+      for (let i = 0; i < pages.length; i++) {
+        const pageObj = pages[i];
+        const pageNum = pageObj.num || i + 1;
+        const rawText = (pageObj.text || '').trim();
 
-        if (pageText) {
-          const pageChunks = chunkPageText(pageText, {
+        if (rawText.length > 0) {
+          const pageChunks = chunkPageText(rawText, {
             roomId: job.roomId,
             fileId: job.fileId,
             fileName: job.fileName,
@@ -440,146 +448,152 @@ export class PamphletProcessor {
           chunks.push(...pageChunks);
         }
 
-        currentProcessedCount++;
-        job.processedPages = currentProcessedCount;
+        processedCount++;
+        job.processedPages = processedCount;
 
-        if (pageNum % 5 === 0 || pageNum === totalPages) {
-          saveChunks(job.roomId, job.fileId, chunks);
-          saveJobCheckpoint(job);
-        }
-
-        if (onProgress) {
-          const percent = Math.min(99, Math.round((currentProcessedCount / totalPages) * 100));
+        if (onProgress && totalPages > 0) {
+          const percent = Math.min(99, Math.round((processedCount / totalPages) * 100));
           onProgress({
             fileId: job.fileId,
             roomId: job.roomId,
             fileName: job.fileName,
             status: 'processing',
-            current: currentProcessedCount,
+            current: processedCount,
             total: totalPages,
             percent,
           });
         }
-      } catch (pageErr) {
-        console.warn(`Error on PDF page ${pageNum} for ${job.fileName}:`, pageErr);
-        currentProcessedCount++;
       }
-    }
 
-    saveChunks(job.roomId, job.fileId, chunks);
-    return { totalPages, chunks };
+      saveChunks(job.roomId, job.fileId, chunks);
+      return { totalPages, chunks };
+    } catch (err: unknown) {
+      console.error(`[PAMPHLET LOG ERROR] PDF_EXTRACTION_FAILED fileId=${job.fileId}:`, err);
+      throw new Error(`PDF_EXTRACTION_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
-   * DOCX processor: extracts structured text preserving headings and paragraphs
+   * DOCX processor using Mammoth to extract raw text
    */
   private async processDocx(
     job: ProcessingJob,
     onProgress?: ProgressCallback
   ): Promise<{ totalPages: number; chunks: PamphletChunk[] }> {
-    const rawResult = await mammoth.extractRawText({ path: job.filePath });
-    const fullText = rawResult.value.trim();
+    try {
+      const rawResult = await mammoth.extractRawText({ path: job.filePath });
+      const fullText = (rawResult.value || '').trim();
 
-    if (!fullText) {
-      throw new Error('متنی در این فایل ورد پیدا نشد.');
-    }
-
-    const pageSize = 1800;
-    const pages: string[] = [];
-    let start = 0;
-    while (start < fullText.length) {
-      pages.push(fullText.slice(start, start + pageSize));
-      start += pageSize;
-    }
-
-    const totalPages = pages.length || 1;
-    job.totalPages = totalPages;
-    const chunks: PamphletChunk[] = [];
-
-    for (let i = 0; i < pages.length; i++) {
-      const pageNum = i + 1;
-      const pageChunks = chunkPageText(pages[i], {
-        roomId: job.roomId,
-        fileId: job.fileId,
-        fileName: job.fileName,
-        pageNumber: pageNum,
-      });
-      chunks.push(...pageChunks);
-
-      job.processedPages = pageNum;
-      if (onProgress) {
-        const percent = Math.round((pageNum / totalPages) * 100);
-        onProgress({
-          fileId: job.fileId,
-          roomId: job.roomId,
-          fileName: job.fileName,
-          status: 'processing',
-          current: pageNum,
-          total: totalPages,
-          percent,
-        });
+      if (!fullText) {
+        throw new Error('FILE_EMPTY: DOCX file contains no text');
       }
-    }
 
-    saveChunks(job.roomId, job.fileId, chunks);
-    return { totalPages, chunks };
+      const pageSize = 1800;
+      const pages: string[] = [];
+      let start = 0;
+      while (start < fullText.length) {
+        pages.push(fullText.slice(start, start + pageSize));
+        start += pageSize;
+      }
+
+      const totalPages = pages.length || 1;
+      job.totalPages = totalPages;
+      const chunks: PamphletChunk[] = [];
+
+      for (let i = 0; i < pages.length; i++) {
+        const pageNum = i + 1;
+        const pageChunks = chunkPageText(pages[i], {
+          roomId: job.roomId,
+          fileId: job.fileId,
+          fileName: job.fileName,
+          pageNumber: pageNum,
+        });
+        chunks.push(...pageChunks);
+
+        job.processedPages = pageNum;
+        if (onProgress) {
+          const percent = Math.round((pageNum / totalPages) * 100);
+          onProgress({
+            fileId: job.fileId,
+            roomId: job.roomId,
+            fileName: job.fileName,
+            status: 'processing',
+            current: pageNum,
+            total: totalPages,
+            percent,
+          });
+        }
+      }
+
+      saveChunks(job.roomId, job.fileId, chunks);
+      return { totalPages, chunks };
+    } catch (err: unknown) {
+      console.error(`[PAMPHLET LOG ERROR] DOCX_EXTRACTION_FAILED fileId=${job.fileId}:`, err);
+      throw new Error(`DOCX_EXTRACTION_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
-   * TXT processor: splits by line/character counts into distinct pages
+   * TXT processor: splits by character/line count into distinct pages
    */
   private async processTxt(
     job: ProcessingJob,
     onProgress?: ProgressCallback
   ): Promise<{ totalPages: number; chunks: PamphletChunk[] }> {
-    const fullText = fs.readFileSync(job.filePath, 'utf-8').trim();
-    if (!fullText) {
-      throw new Error('فایل متنی خالی است.');
-    }
-
-    const pageSize = 1500;
-    const pages: string[] = [];
-    let start = 0;
-    while (start < fullText.length) {
-      pages.push(fullText.slice(start, start + pageSize));
-      start += pageSize;
-    }
-
-    const totalPages = pages.length || 1;
-    job.totalPages = totalPages;
-    const chunks: PamphletChunk[] = [];
-
-    for (let i = 0; i < pages.length; i++) {
-      const pageNum = i + 1;
-      const pageChunks = chunkPageText(pages[i], {
-        roomId: job.roomId,
-        fileId: job.fileId,
-        fileName: job.fileName,
-        pageNumber: pageNum,
-      });
-      chunks.push(...pageChunks);
-
-      job.processedPages = pageNum;
-      if (onProgress) {
-        const percent = Math.round((pageNum / totalPages) * 100);
-        onProgress({
-          fileId: job.fileId,
-          roomId: job.roomId,
-          fileName: job.fileName,
-          status: 'processing',
-          current: pageNum,
-          total: totalPages,
-          percent,
-        });
+    try {
+      const fullText = fs.readFileSync(job.filePath, 'utf-8').trim();
+      if (!fullText) {
+        throw new Error('FILE_EMPTY: Text file is empty');
       }
-    }
 
-    saveChunks(job.roomId, job.fileId, chunks);
-    return { totalPages, chunks };
+      const pageSize = 1500;
+      const pages: string[] = [];
+      let start = 0;
+      while (start < fullText.length) {
+        pages.push(fullText.slice(start, start + pageSize));
+        start += pageSize;
+      }
+
+      const totalPages = pages.length || 1;
+      job.totalPages = totalPages;
+      const chunks: PamphletChunk[] = [];
+
+      for (let i = 0; i < pages.length; i++) {
+        const pageNum = i + 1;
+        const pageChunks = chunkPageText(pages[i], {
+          roomId: job.roomId,
+          fileId: job.fileId,
+          fileName: job.fileName,
+          pageNumber: pageNum,
+        });
+        chunks.push(...pageChunks);
+
+        job.processedPages = pageNum;
+        if (onProgress) {
+          const percent = Math.round((pageNum / totalPages) * 100);
+          onProgress({
+            fileId: job.fileId,
+            roomId: job.roomId,
+            fileName: job.fileName,
+            status: 'processing',
+            current: pageNum,
+            total: totalPages,
+            percent,
+          });
+        }
+      }
+
+      saveChunks(job.roomId, job.fileId, chunks);
+      return { totalPages, chunks };
+    } catch (err: unknown) {
+      console.error(`[PAMPHLET LOG ERROR] TXT_EXTRACTION_FAILED fileId=${job.fileId}:`, err);
+      throw new Error(`TXT_EXTRACTION_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
    * Semantic BM25-like search across room's pamphlet chunks
+   * STRICT ROOM ISOLATION: loads ONLY chunks belonging to roomId
    */
   public searchRelevantChunks(
     roomId: string,
@@ -635,17 +649,17 @@ export class PamphletProcessor {
           const jobPath = path.join(JOBS_DIR, f);
           try {
             const job: ProcessingJob = JSON.parse(fs.readFileSync(jobPath, 'utf-8'));
-            if (job.status === 'processing' && fs.existsSync(job.filePath)) {
-              console.log(`[Auto-Resume] Resuming processing job ${job.fileId} (${job.fileName})`);
+            if ((job.status === 'processing' || job.status === 'error') && fs.existsSync(job.filePath)) {
+              console.log(`[PAMPHLET LOG] Auto-resuming job ${job.fileId} (${job.fileName})`);
               this.processDocument(job, onProgress).catch((e) => {
-                console.warn(`[Auto-Resume] Job ${job.fileId} error:`, e);
+                console.warn(`[PAMPHLET LOG] Job ${job.fileId} error on resume:`, e);
               });
             }
           } catch {}
         }
       }
     } catch (err) {
-      console.warn('Failed to resume jobs:', err);
+      console.warn('[PAMPHLET LOG] Failed to resume jobs:', err);
     }
   }
 }

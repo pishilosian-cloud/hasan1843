@@ -105,10 +105,11 @@ export interface PamphletFile {
   createdAt: string;
   content?: string; // text excerpt or base64 data for AI comprehension
   pagesCount?: number;
-  status?: 'processing' | 'ready' | 'error';
+  status?: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
   processedPages?: number;
   progressPercent?: number;
   error?: string;
+  errorCode?: string;
   totalChunks?: number;
 }
 
@@ -153,11 +154,12 @@ export type WSServerMessage =
       roomId: string;
       fileId: string;
       fileName: string;
-      status: 'processing' | 'ready' | 'error';
+      status: 'processing' | 'ready' | 'error' | 'scanned_ocr_required';
       current: number;
       total: number;
       percent: number;
       error?: string;
+      errorCode?: string;
     }
   | { type: 'presence-update'; roomId: string; members: RoomMember[] }
   | { type: 'user-joined'; roomId: string; member: RoomMember }

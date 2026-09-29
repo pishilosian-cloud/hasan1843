@@ -168,6 +168,62 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const previewMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const previewAudioContextRef = useRef<AudioContext | null>(null);
   const previewScriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const backgroundKeepAliveAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const startBackgroundAudioSession = useCallback((roomTitle: string) => {
+    try {
+      // 1. Setup Media Session metadata so mobile OS (Android Chrome / iOS Safari) treats this as an active VoIP Call
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: `🎙️ تماس صوتی ● ${roomTitle || 'اتاق مطالعه'}`,
+          artist: 'میکروفون فعال (پس‌زمینه)',
+          album: 'کلاس آنلاین',
+          artwork: [
+            { src: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=192&auto=format&fit=crop&q=80', sizes: '192x192', type: 'image/png' },
+            { src: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=512&auto=format&fit=crop&q=80', sizes: '512x512', type: 'image/png' },
+          ],
+        });
+        navigator.mediaSession.playbackState = 'playing';
+
+        try {
+          navigator.mediaSession.setActionHandler('play', () => {
+            if (playbackAudioCtxRef.current && playbackAudioCtxRef.current.state === 'suspended') {
+              playbackAudioCtxRef.current.resume().catch(() => {});
+            }
+          });
+          navigator.mediaSession.setActionHandler('pause', () => {});
+        } catch {}
+      }
+
+      // 2. Continuous inaudible loop to prevent mobile Chrome/Safari from sleeping/throttling the tab in background
+      if (!backgroundKeepAliveAudioRef.current) {
+        // Continuous silent WAV audio stream
+        const silentWavBase64 = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        const silentAudio = new Audio(silentWavBase64);
+        silentAudio.loop = true;
+        silentAudio.volume = 0.001;
+        (silentAudio as any).playsInline = true;
+        (silentAudio as any).webkitPlaysInline = true;
+        silentAudio.play().catch(() => {});
+        backgroundKeepAliveAudioRef.current = silentAudio;
+      }
+    } catch (err) {
+      console.warn('[Background Audio KeepAlive]', err);
+    }
+  }, []);
+
+  const stopBackgroundAudioSession = useCallback(() => {
+    try {
+      if (backgroundKeepAliveAudioRef.current) {
+        backgroundKeepAliveAudioRef.current.pause();
+        backgroundKeepAliveAudioRef.current.src = '';
+        backgroundKeepAliveAudioRef.current = null;
+      }
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none';
+      }
+    } catch {}
+  }, []);
 
   const setVoiceMuteHandler = useCallback((handler: ((shouldMute: boolean) => Promise<void>) | null) => {
     voiceMuteHandlerRef.current = handler;
@@ -221,6 +277,30 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => {
     voiceStateRef.current = voiceState;
   }, [voiceState]);
+
+  // Keep AudioContext & VoIP alive even when user switches tabs, opens other pages in Chrome, or locks mobile screen
+  useEffect(() => {
+    const handleVisibilityOrFocus = () => {
+      if (voiceStateRef.current.isCallActive) {
+        if (playbackAudioCtxRef.current && playbackAudioCtxRef.current.state === 'suspended') {
+          playbackAudioCtxRef.current.resume().catch(() => {});
+        }
+        if (previewAudioContextRef.current && previewAudioContextRef.current.state === 'suspended') {
+          previewAudioContextRef.current.resume().catch(() => {});
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('pageshow', handleVisibilityOrFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('pageshow', handleVisibilityOrFocus);
+    };
+  }, []);
 
   const showToast = useCallback((text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ text, type });
@@ -838,6 +918,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAiThinking({ isThinking: false });
 
     stopAndClearAllAudio();
+    stopBackgroundAudioSession();
 
     if (previewScriptProcessorRef.current) {
       try {
@@ -1027,6 +1108,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (voiceState.isCallActive) {
       // Immediately stop all playing audio and clear playback queues
       stopAndClearAllAudio();
+      stopBackgroundAudioSession();
 
       // Clean up Preview Audio & LiveKit Voice Session
       if (previewScriptProcessorRef.current) {
@@ -1212,6 +1294,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           } catch (ctxErr) {
             console.warn('[AudioContext Streaming Init Error]', ctxErr);
           }
+
+          startBackgroundAudioSession(activeRoom.name || activeRoom.id);
 
           setVoiceState({
             isCallActive: true,

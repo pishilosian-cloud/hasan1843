@@ -272,73 +272,67 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Subscribe to WebSocket chatService events
   const prevStatusRef = useRef<ConnectionStatus>('disconnected');
-  const audioQueueRef = useRef<{ [userId: string]: string[] }>({});
-  const isPlayingRef = useRef<{ [userId: string]: boolean }>({});
-  const activeAudioElementsRef = useRef<HTMLAudioElement[]>([]);
+  const playbackAudioCtxRef = useRef<AudioContext | null>(null);
+  const scheduledPlaybackTimesRef = useRef<{ [userId: string]: number }>({});
 
   const stopAndClearAllAudio = useCallback(() => {
-    activeAudioElementsRef.current.forEach((audio) => {
+    if (playbackAudioCtxRef.current) {
       try {
-        audio.pause();
-        audio.currentTime = 0;
-        audio.src = '';
+        playbackAudioCtxRef.current.close();
       } catch {}
-    });
-    activeAudioElementsRef.current = [];
-    audioQueueRef.current = {};
-    isPlayingRef.current = {};
+      playbackAudioCtxRef.current = null;
+    }
+    scheduledPlaybackTimesRef.current = {};
   }, []);
 
-  const playNextAudioChunk = useCallback((userId: string) => {
+  const playIncomingVoiceChunk = useCallback(async (userId: string, base64Data: string) => {
     if (!voiceStateRef.current.isCallActive) {
       stopAndClearAllAudio();
       return;
     }
 
-    const queue = audioQueueRef.current[userId];
-    if (!queue || queue.length === 0) {
-      isPlayingRef.current[userId] = false;
-      return;
-    }
-
-    isPlayingRef.current[userId] = true;
-    const nextSrc = queue.shift();
-    if (!nextSrc) {
-      isPlayingRef.current[userId] = false;
-      return;
-    }
-
     try {
-      const audio = new Audio(nextSrc);
-      audio.volume = 1.0;
-      activeAudioElementsRef.current.push(audio);
-
-      const cleanup = () => {
-        activeAudioElementsRef.current = activeAudioElementsRef.current.filter((a) => a !== audio);
-      };
-
-      audio.onended = () => {
-        cleanup();
-        if (voiceStateRef.current.isCallActive) {
-          playNextAudioChunk(userId);
-        }
-      };
-      audio.onerror = () => {
-        cleanup();
-        if (voiceStateRef.current.isCallActive) {
-          playNextAudioChunk(userId);
-        }
-      };
-      audio.play().catch(() => {
-        cleanup();
-        if (voiceStateRef.current.isCallActive) {
-          playNextAudioChunk(userId);
-        }
-      });
-    } catch {
-      if (voiceStateRef.current.isCallActive) {
-        playNextAudioChunk(userId);
+      // Decode Base64 to ArrayBuffer synchronously in microseconds
+      const binaryString = window.atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
       }
+      const arrayBuffer = bytes.buffer;
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+
+      if (!playbackAudioCtxRef.current || playbackAudioCtxRef.current.state === 'closed') {
+        playbackAudioCtxRef.current = new AudioCtx();
+      }
+
+      const ctx = playbackAudioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      // Fast native C++ Web Audio decoding (under 2ms)
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      if (!audioBuffer || !voiceStateRef.current.isCallActive) return;
+
+      const now = ctx.currentTime;
+      let scheduledTime = scheduledPlaybackTimesRef.current[userId] || 0;
+
+      // Anti-Drift & Anti-Lag: If scheduled time is behind now or more than 280ms ahead, snap to now + 15ms
+      if (scheduledTime < now || scheduledTime > now + 0.28) {
+        scheduledTime = now + 0.015;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(scheduledTime);
+
+      scheduledPlaybackTimesRef.current[userId] = scheduledTime + audioBuffer.duration;
+    } catch {
+      // Ignore individual corrupted packet decode errors gracefully
     }
   }, [stopAndClearAllAudio]);
 
@@ -497,18 +491,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ONLY receive and play voice if the current user is active inside the voice call
       if (!voiceStateRef.current.isCallActive) return;
 
-      try {
-        const audioSrc = `data:${data.mimeType};base64,${data.chunk}`;
-        if (!audioQueueRef.current[data.userId]) {
-          audioQueueRef.current[data.userId] = [];
-        }
-        audioQueueRef.current[data.userId].push(audioSrc);
-
-        if (!isPlayingRef.current[data.userId]) {
-          playNextAudioChunk(data.userId);
-        }
-      } catch (err) {
-        console.warn('[Audio Play Error]', err);
+      if (data.chunk) {
+        playIncomingVoiceChunk(data.userId, data.chunk);
       }
     });
 
@@ -1142,43 +1126,44 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
                 previewMediaRecorderRef.current = rec;
 
-                rec.ondataavailable = (e) => {
+                rec.ondataavailable = async (e) => {
                   if (
                     e.data &&
-                    e.data.size > 100 &&
+                    e.data.size > 80 &&
                     voiceStateRef.current.isCallActive &&
                     !voiceStateRef.current.isMuted
                   ) {
-                    const reader = new FileReader();
-
-                    reader.onloadend = () => {
-                      const resultStr = reader.result as string;
-                      if (resultStr && resultStr.includes(',')) {
-                        const base64Data = resultStr.split(',')[1];
-                        if (base64Data && activeRoom) {
-                          chatService.sendVoiceAudioChunk(
-                            activeRoom.id,
-                            currentUser.id,
-                            base64Data,
-                            mimeType
-                          );
-                        }
+                    try {
+                      const arrayBuffer = await e.data.arrayBuffer();
+                      const bytes = new Uint8Array(arrayBuffer);
+                      let binary = '';
+                      const chunkSz = 8192;
+                      for (let i = 0; i < bytes.length; i += chunkSz) {
+                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz) as any);
                       }
-                    };
+                      const base64Data = window.btoa(binary);
 
-                    reader.readAsDataURL(e.data);
+                      if (base64Data && activeRoom) {
+                        chatService.sendVoiceAudioChunk(
+                          activeRoom.id,
+                          currentUser.id,
+                          base64Data,
+                          mimeType
+                        );
+                      }
+                    } catch {}
                   }
                 };
 
                 rec.onstop = () => {
                   if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                    setTimeout(recordSlice, 10);
+                    setTimeout(recordSlice, 8);
                   }
                 };
 
                 rec.onerror = () => {
                   if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                    setTimeout(recordSlice, 50);
+                    setTimeout(recordSlice, 40);
                   }
                 };
 
@@ -1190,12 +1175,12 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                       rec.stop();
                     } catch {}
                   }
-                }, 280);
+                }, 160);
 
               } catch (err) {
                 console.warn('[Slice rec err]', err);
                 if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                  setTimeout(recordSlice, 100);
+                  setTimeout(recordSlice, 60);
                 }
               }
             };

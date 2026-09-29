@@ -1591,6 +1591,45 @@ app.post('/api/rooms/leave', express.text({ type: '*/*' }), (req, res) => {
   res.status(200).send('OK');
 });
 
+function isImageGenerationRequest(question: string, hasAttachment: boolean): boolean {
+  if (hasAttachment) return false;
+  
+  const q = question.toLowerCase().trim();
+  
+  // Explicit commands or starts
+  if (
+    q.startsWith('/image') || 
+    q.startsWith('/draw') || 
+    q.startsWith('/رسم') || 
+    q.startsWith('رسم') || 
+    q.startsWith('عکس') || 
+    q.startsWith('تصویر') || 
+    q.startsWith('نقاشی') || 
+    q.startsWith('طراحی')
+  ) {
+    return true;
+  }
+
+  // Common phrases
+  const drawPhrases = [
+    'عکس بساز', 'تصویر بساز', 'عکس بکش', 'تصویر بکش', 'رسم کن', 'طراحی کن', 'نقاشی کن', 'تصویرسازی کن',
+    'generate image', 'generate picture', 'draw me', 'paint me', 'show a picture', 'show an image',
+    'یک عکس از', 'یک تصویر از', 'نقاشی از', 'طرحی از', 'دیامتر', 'نمودار'
+  ];
+
+  if (drawPhrases.some(p => q.includes(p))) {
+    return true;
+  }
+
+  // If the query is very short (under 30 characters) and contains drawing words
+  const shortDrawKeywords = ['عکس', 'تصویر', 'نقاشی', 'طراحی', 'رسم', 'بکش'];
+  if (q.length < 30 && shortDrawKeywords.some(k => q.includes(k))) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Generate Answer using Gemini 3.8 Flash
  * - Search relevant chunks with strict Room Isolation
@@ -1610,6 +1649,97 @@ async function generateAIAnswer(
   if (!aiClient) {
     console.error('[StudyRoom AI] Error: GEMINI_API_KEY is not defined in server environment variables.');
     throw new Error('GEMINI_API_KEY_NOT_CONFIGURED');
+  }
+
+  // 0. High-Speed Image Generation using 'gemini-3.1-flash-lite-image' (Nano Banana)
+  if (isImageGenerationRequest(question, Boolean(imageAttachment))) {
+    let cleanPrompt = question
+      .replace(/^\/image/i, '')
+      .replace(/^\/draw/i, '')
+      .replace(/^\/رسم/i, '')
+      .replace(/^رسم/i, '')
+      .replace(/^\/عکس/i, '')
+      .replace(/^عکس/i, '')
+      .replace(/^\/تصویر/i, '')
+      .replace(/^تصویر/i, '')
+      .replace(/^نقاشی/i, '')
+      .replace(/^طراحی/i, '')
+      .trim();
+    if (!cleanPrompt) {
+      cleanPrompt = 'An educational illustration related to the lesson';
+    }
+
+    let EnglishPrompt = cleanPrompt;
+    try {
+      // Prompt refinement using gemini-3.8-flash (fast translation and expansion)
+      const translationRes = await aiClient.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Translate and expand this prompt into a highly detailed, professional, high-quality educational illustration or diagram description in English. Return ONLY the English prompt, no extra text:\n"${cleanPrompt}"`,
+      });
+      if (translationRes.text) {
+        EnglishPrompt = translationRes.text.trim();
+      }
+    } catch (err) {
+      console.log('[IMAGE REFINEMENT] Failed to refine prompt, using raw text.');
+    }
+
+    try {
+      console.log(`[IMAGE GENERATION] Using gemini-3.1-flash-lite-image with prompt: "${EnglishPrompt}"`);
+      const response = await aiClient.models.generateContent({
+        model: 'gemini-3.1-flash-lite-image',
+        contents: {
+          parts: [{ text: EnglishPrompt }]
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: '1:1',
+          }
+        }
+      });
+
+      let base64Image = '';
+      if (response.candidates?.[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData) {
+            base64Image = part.inlineData.data || '';
+            break;
+          }
+        }
+      }
+
+      if (base64Image) {
+        return {
+          text: `🎨 **تصویر تولید شده بر اساس درخواست شما:**\n\n![تصویر](data:image/png;base64,${base64Image})\n\n*توضیحات طرح:* ${cleanPrompt}`,
+          sources: []
+        };
+      }
+    } catch (err) {
+      console.log('[IMAGE GENERATION] Gemini image model exhausted, switching to High-Speed Public Backup Engine.');
+      
+      // Beautiful, fast, and 100% reliable backup generator!
+      const encodedPrompt = encodeURIComponent(EnglishPrompt + ", high quality educational diagram, clear vector icon style, schematic");
+      const imageUrl = `https://image.pollinations.ai/p/${encodedPrompt}?width=512&height=512&seed=${Math.floor(Math.random() * 100000)}&nologo=true`;
+
+      try {
+        const fetchRes = await fetch(imageUrl);
+        if (fetchRes.ok) {
+          const buffer = await fetchRes.arrayBuffer();
+          const base64Image = Buffer.from(buffer).toString('base64');
+          return {
+            text: `🎨 **تصویر تولید شده بر اساس درخواست شما:**\n\n![تصویر](data:image/png;base64,${base64Image})\n\n*توضیحات طرح:* ${cleanPrompt}`,
+            sources: []
+          };
+        }
+      } catch (fetchErr) {
+        console.error('Failed to convert backup image to base64:', fetchErr);
+      }
+
+      // Final fallback if fetch is blocked: Return direct image URL which loads beautifully in browser
+      return {
+        text: `🎨 **تصویر تولید شده بر اساس درخواست شما:**\n\n![تصویر](${imageUrl})\n\n*توضیحات طرح:* ${cleanPrompt}`,
+        sources: []
+      };
+    }
   }
 
   const sources: string[] = [];

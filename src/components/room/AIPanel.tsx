@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
+import { formatMathAndMarkdown } from '../../utils/mathRenderer';
+import { CopyButton } from '../ui/CopyButton';
 import {
   Bot,
   Sparkles,
@@ -443,14 +445,17 @@ export const AIPanel: React.FC = () => {
                     <span className="text-[10px] text-indigo-400 dark:text-indigo-500 font-mono">
                       {item.createdAt}
                     </span>
-                    <button
-                      type="button"
-                      onClick={handleReplyClick}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-indigo-600 hover:text-indigo-800 dark:hover:text-indigo-200 cursor-pointer"
-                      title="ریپلای / پاسخ"
-                    >
-                      <CornerUpLeft className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <CopyButton text={item.message} className="!p-0.5 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" />
+                      <button
+                        type="button"
+                        onClick={handleReplyClick}
+                        className="p-0.5 text-indigo-600 hover:text-indigo-800 dark:hover:text-indigo-200 cursor-pointer"
+                        title="ریپلای / پاسخ"
+                      >
+                        <CornerUpLeft className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
                 {item.replyTo && (
@@ -498,14 +503,17 @@ export const AIPanel: React.FC = () => {
                   <span className="text-[10px] text-slate-400 font-mono">
                     {item.createdAt}
                   </span>
-                  <button
-                    type="button"
-                    onClick={handleReplyClick}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-indigo-600 hover:text-indigo-800 dark:hover:text-indigo-200 cursor-pointer"
-                    title="ریپلای / پاسخ"
-                  >
-                    <CornerUpLeft className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <CopyButton text={item.message} className="!p-0.5 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" />
+                    <button
+                      type="button"
+                      onClick={handleReplyClick}
+                      className="p-0.5 text-indigo-600 hover:text-indigo-800 dark:hover:text-indigo-200 cursor-pointer"
+                      title="ریپلای / پاسخ"
+                    >
+                      <CornerUpLeft className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -518,8 +526,8 @@ export const AIPanel: React.FC = () => {
                 </div>
               )}
 
-              <div className="text-xs text-slate-800 dark:text-slate-200 whitespace-pre-line leading-relaxed font-sans select-text">
-                {item.message}
+              <div className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed font-sans select-text">
+                {formatMathAndMarkdown(item.message)}
               </div>
 
               {item.sources && Array.isArray(item.sources) && item.sources.length > 0 && (

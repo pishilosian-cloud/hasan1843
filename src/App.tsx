@@ -5,7 +5,6 @@ import { RoomView } from './components/room/RoomView';
 import { CreateRoomModal } from './components/modals/CreateRoomModal';
 import { JoinRoomModal } from './components/modals/JoinRoomModal';
 import { NameEntryModal } from './components/modals/NameEntryModal';
-import { PreviewTestModal } from './components/modals/PreviewTestModal';
 import { OfflineIndicator } from './components/ui/OfflineIndicator';
 import { CheckCircle2, AlertCircle, Info, Loader2, DoorClosed } from 'lucide-react';
 
@@ -120,7 +119,6 @@ const AppContent: React.FC = () => {
       <CreateRoomModal />
       <JoinRoomModal />
       <NameEntryModal />
-      <PreviewTestModal />
     </>
   );
 };

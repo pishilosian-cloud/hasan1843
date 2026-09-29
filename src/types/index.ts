@@ -131,7 +131,7 @@ export interface VoiceState {
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
 export type AppView = 'lobby' | 'room';
-export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry' | 'preview-test';
+export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry';
 
 // WebSocket Protocol Types
 export type WSClientMessage =

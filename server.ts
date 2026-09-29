@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { AccessToken } from 'livekit-server-sdk';
 import type {
   RoomData,
@@ -1764,7 +1764,7 @@ ${modeInstruction}
             systemInstruction,
             temperature: mode === 'complex' ? 0.4 : 0.7,
             thinkingConfig: modelName.includes('3.8')
-              ? { thinkingBudget: 4096 } // Full 4096 thinking tokens for deep extended reasoning
+              ? { thinkingLevel: ThinkingLevel.HIGH } // Use standard HIGH thinking level for Gemini 3.8 models
               : undefined,
           },
         });

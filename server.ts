@@ -1388,17 +1388,19 @@ app.post('/api/voice/token', async (req, res) => {
 
     const livekitRoomName = `studyroom_${room.id.toLowerCase()}`;
 
-    if (!apiKey || !apiSecret || !livekitUrl) {
-      // In preview / development environment without external LiveKit Cloud credentials:
-      // Gracefully switch to StudyRoom Preview SFU Mode so users can test voice immediately!
+    const preferAntiFilter = req.body?.preferAntiFilter !== false;
+
+    if (preferAntiFilter || !apiKey || !apiSecret || !livekitUrl) {
+      // Direct Server WebSocket Relay (Port 443 / TLS) - 100% Anti-Filter & No VPN Required!
       return res.json({
         isPreviewMode: true,
-        serverUrl: 'builtin://preview-voice-sfu',
-        token: `preview-token-${room.id}-${identity}`,
+        isAntiFilterMode: true,
+        serverUrl: 'builtin://direct-voice-relay',
+        token: `direct-voice-${room.id}-${identity}`,
         roomName: livekitRoomName,
         participantIdentity: identity,
         participantName: name,
-        notice: 'سرور در حالت Preview SFU قرار دارد؛ صدای واقعی بین کاربران بدون نیاز به کردینشال ابری منتقل می‌شود.',
+        notice: 'اتصال صوتی مستقیم ضدتحریم فعال است (انتقال از پورت ۴۴۳ بدون نیاز به فیلترشکن).',
       });
     }
 

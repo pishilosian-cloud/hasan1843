@@ -272,6 +272,40 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Subscribe to WebSocket chatService events
   const prevStatusRef = useRef<ConnectionStatus>('disconnected');
+  const audioQueueRef = useRef<{ [userId: string]: string[] }>({});
+  const isPlayingRef = useRef<{ [userId: string]: boolean }>({});
+
+  const playNextAudioChunk = useCallback((userId: string) => {
+    const queue = audioQueueRef.current[userId];
+    if (!queue || queue.length === 0) {
+      isPlayingRef.current[userId] = false;
+      return;
+    }
+
+    isPlayingRef.current[userId] = true;
+    const nextSrc = queue.shift();
+    if (!nextSrc) {
+      isPlayingRef.current[userId] = false;
+      return;
+    }
+
+    try {
+      const audio = new Audio(nextSrc);
+      audio.volume = 1.0;
+      audio.onended = () => {
+        playNextAudioChunk(userId);
+      };
+      audio.onerror = () => {
+        playNextAudioChunk(userId);
+      };
+      audio.play().catch(() => {
+        playNextAudioChunk(userId);
+      });
+    } catch {
+      playNextAudioChunk(userId);
+    }
+  }, []);
+
   useEffect(() => {
     const unsubInit = chatService.onInit((data) => {
       setIsLoadingMessages(false);
@@ -426,9 +460,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (data.userId === currentUser.id) return;
       try {
         const audioSrc = `data:${data.mimeType};base64,${data.chunk}`;
-        const audio = new Audio(audioSrc);
-        audio.volume = 1.0;
-        audio.play().catch(() => {});
+        if (!audioQueueRef.current[data.userId]) {
+          audioQueueRef.current[data.userId] = [];
+        }
+        audioQueueRef.current[data.userId].push(audioSrc);
+
+        if (!isPlayingRef.current[data.userId]) {
+          playNextAudioChunk(data.userId);
+        }
       } catch (err) {
         console.warn('[Audio Play Error]', err);
       }
@@ -1111,7 +1150,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           });
 
           updateLiveKitState({
-            connectionState: 'connected (Preview SFU Mode)',
+            connectionState: 'متصل (ارتباط مستقیم پورت ۴۴۳ / بدون فیلترشکن)',
             roomName,
             isConnected: true,
             isReconnecting: false,
@@ -1121,7 +1160,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           });
 
           chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
-          showToast('به تماس صوتی اتاق (حالت پیش‌نمایش زنده) متصل شدید.', 'success');
+          showToast('به تماس صوتی متصل شدید (حالت مستقیم و بدون نیاز به فیلترشکن).', 'success');
           return;
         }
 

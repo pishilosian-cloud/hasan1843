@@ -639,6 +639,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // If activeRoom is already this room, do nothing
       if (activeRoom && activeRoom.id.toUpperCase() === cleanUrlId) {
+        setIsLoadingRoom(false);
         return;
       }
 
@@ -648,54 +649,59 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setIsLoadingRoom(true);
         setRoomError(null);
 
-        const roomData = await roomService.getRoom(cleanUrlId);
-        if (isCancelled) return;
+        try {
+          const roomData = await roomService.getRoom(cleanUrlId);
+          if (isCancelled) return;
 
-        if (!roomData) {
-          setIsLoadingRoom(false);
-          setActiveRoom(null);
-          setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
-          showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
-          return;
+          if (!roomData) {
+            setActiveRoom(null);
+            setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
+            showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+            return;
+          }
+
+          // Every time a user enters a class without having entered their name in this tab, prompt for their name!
+          if (!currentUser.name || !currentUser.name.trim()) {
+            setPendingRoomId(roomData.id);
+            setModalType('name-entry');
+            return;
+          }
+
+          const effectiveUser: User = {
+            ...currentUser,
+            name: currentUser.name.trim(),
+            avatar: currentUser.name.trim().charAt(0).toUpperCase(),
+          };
+
+          const targetRoomModel: Room = {
+            id: roomData.id,
+            name: roomData.name,
+            category: roomData.category || 'عمومی',
+            createdAt: roomData.createdAt,
+            hostName: roomData.ownerName,
+            membersCount: roomData.members?.length || 1,
+          };
+
+          setActiveRoom(targetRoomModel);
+          if (roomData.members) {
+            setMembers(mapMembersToUsers(roomData.members));
+          }
+
+          setModalType('none');
+          setIsLoadingMessages(true);
+          setConnectionStatus('connected');
+          chatService.connectToRoom(roomData.id, {
+            id: effectiveUser.id,
+            name: effectiveUser.name,
+            avatarBg: effectiveUser.avatarBg,
+          });
+        } catch (err) {
+          setRoomError('خطا در دریافت اطلاعات کلاس');
+        } finally {
+          if (!isCancelled) {
+            setIsLoadingRoom(false);
+          }
         }
-
-        setIsLoadingRoom(false);
-
-        // Every time a user enters a class without having entered their name in this tab, prompt for their name!
-        if (!currentUser.name || !currentUser.name.trim()) {
-          setPendingRoomId(roomData.id);
-          setModalType('name-entry');
-          return;
-        }
-
-        const effectiveUser: User = {
-          ...currentUser,
-          name: currentUser.name.trim(),
-          avatar: currentUser.name.trim().charAt(0).toUpperCase(),
-        };
-
-        const targetRoomModel: Room = {
-          id: roomData.id,
-          name: roomData.name,
-          category: roomData.category || 'عمومی',
-          createdAt: roomData.createdAt,
-          hostName: roomData.ownerName,
-          membersCount: roomData.members?.length || 1,
-        };
-
-        setActiveRoom(targetRoomModel);
-        if (roomData.members) {
-          setMembers(mapMembersToUsers(roomData.members));
-        }
-
-        setModalType('none');
-        setIsLoadingMessages(true);
-        setConnectionStatus('connected');
-        chatService.connectToRoom(roomData.id, {
-          id: effectiveUser.id,
-          name: effectiveUser.name,
-          avatarBg: effectiveUser.avatarBg,
-        });
       };
 
       checkAndJoin();
@@ -744,12 +750,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (targetRoomId) {
       const cleanTargetId = targetRoomId.toUpperCase();
+      setIsLoadingRoom(true);
       navigate(`/room/${cleanTargetId}`);
 
       roomService.getRoom(cleanTargetId).then((r) => {
         if (!r) {
           setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
           showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+          setIsLoadingRoom(false);
           return;
         }
 
@@ -764,14 +772,19 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (r.members) setMembers(mapMembersToUsers(r.members));
 
         setIsLoadingMessages(true);
+        setConnectionStatus('connected');
         chatService.connectToRoom(r.id, {
           id: updatedUser.id,
           name: trimmed,
           avatarBg: updatedUser.avatarBg,
         });
         showToast(`ورود به اتاق «${r.name}» با موفقیت انجام شد.`);
+        setIsLoadingRoom(false);
+      }).catch(() => {
+        setIsLoadingRoom(false);
       });
     } else if (activeRoom) {
+      setIsLoadingRoom(false);
       chatService.connectToRoom(activeRoom.id, {
         id: updatedUser.id,
         name: trimmed,
@@ -870,10 +883,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return;
       }
 
-      const effectiveName = userNameInput?.trim() || '';
+      const effectiveName = userNameInput?.trim() || currentUser.name.trim() || '';
       if (!effectiveName) {
         setPendingRoomId(roomData.id);
         setModalType('name-entry');
+        setIsLoadingRoom(false);
         return;
       }
 

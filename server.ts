@@ -183,109 +183,12 @@ function loadStateFromDisk() {
 function seedInitialData() {
   loadStateFromDisk();
 
-  if (!rooms.has('ABC123')) {
-    const seedRoom1: RoomData = {
-      id: 'ABC123',
-      name: 'آمادگی امتحان حسابداری',
-      category: 'حسابداری و مدیریت',
-      createdAt: '۱۰:۰۰',
-      ownerId: 'user-seed-1',
-      ownerName: 'سارا احمدی',
-      members: [
-        {
-          id: 'user-seed-1',
-          name: 'سارا احمدی',
-          joinedAt: '۱۰:۰۰',
-          isOnline: false,
-          avatarBg: 'from-emerald-500 to-teal-600',
-          role: 'host',
-        },
-        {
-          id: 'user-seed-2',
-          name: 'رضا محمدی',
-          joinedAt: '۱۰:۰۵',
-          isOnline: false,
-          avatarBg: 'from-amber-500 to-orange-600',
-          role: 'member',
-        },
-      ],
-    };
-    rooms.set(seedRoom1.id, seedRoom1);
-
-    roomMessages.set(seedRoom1.id, [
-      {
-        id: 'msg-seed-1',
-        roomId: 'ABC123',
-        senderId: 'user-seed-1',
-        senderName: 'سارا احمدی',
-        senderAvatarBg: 'from-emerald-500 to-teal-600',
-        content: 'سلام هم‌اتاقی‌ها! مطالعه فصل اول حسابداری مالی رو شروع کنیم.',
-        timestamp: '۱۰:۰۲',
-        createdAt: new Date().toISOString(),
-        isSelf: false,
-      },
-      {
-        id: 'msg-seed-2',
-        roomId: 'ABC123',
-        senderId: 'user-seed-2',
-        senderName: 'رضا محمدی',
-        senderAvatarBg: 'from-amber-500 to-orange-600',
-        content: 'سلام، عالیه. من جزوه خلاصه فرمول‌ها و دارایی‌ها رو آپلود کردم.',
-        timestamp: '۱۰:۰۶',
-        createdAt: new Date().toISOString(),
-        isSelf: false,
-      },
-    ]);
-
-    roomPamphlets.set(seedRoom1.id, [
-      {
-        id: 'pamphlet-seed-1',
-        roomId: 'ABC123',
-        name: 'جزوه_حسابداری_فصل۱و۲.txt',
-        size: '۳۵ کیلوبایت',
-        type: 'TXT',
-        uploadedBy: 'سارا احمدی',
-        createdAt: '۱۰:۱۰',
-        content: `مفاهیم اساسی حسابداری مالی:
-۱. دارایی جاری: دارایی‌هایی هستند که انتظار می‌رود در طول یک دوره مالی یا چرخه عملیاتی به نقد تبدیل، فروخته یا مصرف شوند. اقلام اصلی: وجه نقد، سرمایه‌گذاری‌های کوتاه‌مدت، حساب‌ها و اسناد دریافتنی، موجودی کالا و پیش‌پرداخت‌ها.
-۲. بدهی جاری: تعهداتی که تسویه آنها ظرف یک سال یا یک چرخه عملیاتی از محل دارایی‌های جاری انجام می‌گیرد.
-۳. معادله اساسی حسابداری: دارایی‌ها = بدهی‌ها + سرمایه (حقوق صاحبان سهام).
-۴. فرض تداوم فعالیت: فرض می‌شود واحد تجاری برای مدتی نامحدود به عملیات خود ادامه می‌دهد.
-۵. دوره مالی: عمر واحد تجاری به دوره‌های زمانی مساوی تقسیم می‌شود.`,
-      },
-    ]);
-
-    roomAIMessages.set(seedRoom1.id, [
-      {
-        id: 'aimsg-seed-1',
-        roomId: 'ABC123',
-        type: 'user',
-        sender: 'رضا محمدی',
-        senderId: 'user-seed-2',
-        senderAvatarBg: 'from-amber-500 to-orange-600',
-        message: 'دارایی جاری چیه و شامل چه مواردی میشه؟',
-        createdAt: '۱۰:۱۲',
-      },
-      {
-        id: 'aimsg-seed-2',
-        roomId: 'ABC123',
-        type: 'ai',
-        sender: 'دستیار هوشمند AI',
-        message: `بر اساس جزوه آپلود شده «جزوه_حسابداری_فصل۱و۲.txt»:
-
-دارایی‌های جاری دارایی‌هایی هستند که انتظار می‌رود ظرف یک سال مالی یا یک چرخه عملیاتی به وجه نقد تبدیل، مصرف یا فروخته شوند.
-
-اقلام اصلی دارایی‌های جاری:
-۱. وجه نقد و بانک
-۲. سرمایه‌گذاری‌های کوتاه‌مدت
-۳. حساب‌ها و اسناد دریافتنی تجاری
-۴. موجودی مواد و کالا
-۵. پیش‌پرداخت‌ها`,
-        createdAt: '۱۰:۱۲',
-        sources: ['جزوه_حسابداری_فصل۱و۲.txt'],
-        mode: 'simple',
-      },
-    ]);
+  // Explicitly delete ABC123 room from memory so it gets removed if previously loaded from disk
+  if (rooms.has('ABC123')) {
+    rooms.delete('ABC123');
+    roomMessages.delete('ABC123');
+    roomAIMessages.delete('ABC123');
+    roomPamphlets.delete('ABC123');
   }
 
   saveStateToDisk();

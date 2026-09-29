@@ -1115,6 +1115,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           // StudyRoom Built-in Preview SFU Audio Relay (Active for instant testing in preview environment)
           previewMediaStreamRef.current = micStream;
 
+          // Synchronously mark voice active so recordSlice and audio handlers immediately operate
+          voiceStateRef.current = {
+            ...voiceStateRef.current,
+            isCallActive: true,
+            isMuted: false,
+          };
+
           try {
             const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
               ? 'audio/webm;codecs=opus'
@@ -1123,10 +1130,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             let isRecordingLoop = true;
 
             const recordSlice = () => {
-              if (
-                !previewMediaStreamRef.current ||
-                !voiceStateRef.current.isCallActive
-              ) {
+              if (!previewMediaStreamRef.current || !voiceStateRef.current.isCallActive) {
                 return;
               }
 
@@ -1141,7 +1145,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 rec.ondataavailable = (e) => {
                   if (
                     e.data &&
-                    e.data.size > 200 &&
+                    e.data.size > 100 &&
                     voiceStateRef.current.isCallActive &&
                     !voiceStateRef.current.isMuted
                   ) {
@@ -1149,15 +1153,16 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
                     reader.onloadend = () => {
                       const resultStr = reader.result as string;
-                      const base64Data = resultStr.split(',')[1];
-
-                      if (base64Data && activeRoom) {
-                        chatService.sendVoiceAudioChunk(
-                          activeRoom.id,
-                          currentUser.id,
-                          base64Data,
-                          mimeType
-                        );
+                      if (resultStr && resultStr.includes(',')) {
+                        const base64Data = resultStr.split(',')[1];
+                        if (base64Data && activeRoom) {
+                          chatService.sendVoiceAudioChunk(
+                            activeRoom.id,
+                            currentUser.id,
+                            base64Data,
+                            mimeType
+                          );
+                        }
                       }
                     };
 
@@ -1166,16 +1171,17 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 };
 
                 rec.onstop = () => {
-                  if (
-                    isRecordingLoop &&
-                    voiceStateRef.current.isCallActive
-                  ) {
-                    // فاصله بسیار کوتاه برای جلوگیری از ایجاد شکاف محسوس
-                    setTimeout(recordSlice, 15);
+                  if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
+                    setTimeout(recordSlice, 10);
                   }
                 };
 
-                // کاهش اندازه chunk از 350ms به 200ms
+                rec.onerror = () => {
+                  if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
+                    setTimeout(recordSlice, 50);
+                  }
+                };
+
                 rec.start();
 
                 setTimeout(() => {
@@ -1184,9 +1190,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                       rec.stop();
                     } catch {}
                   }
-                }, 200);
+                }, 280);
 
-              } catch {}
+              } catch (err) {
+                console.warn('[Slice rec err]', err);
+                if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
+                  setTimeout(recordSlice, 100);
+                }
+              }
             };
 
             recordSlice();

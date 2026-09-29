@@ -825,6 +825,14 @@ class ChatService {
     this.voiceAudioListeners.add(fn);
     return () => this.voiceAudioListeners.delete(fn);
   }
+
+  public sendLeaveDirect(roomId: string, userId: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'leave-room', roomId, userId }));
+      } catch {}
+    }
+  }
 }
 
 export const chatService = new ChatService();

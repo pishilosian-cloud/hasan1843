@@ -15,6 +15,7 @@ import {
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
+import { showBackgroundNotification, requestNotificationPermission } from '../utils/notificationService';
 import type { LiveKitDebugInfo } from '../components/room/LiveKitVoiceManager';
 
 export interface UploadProgressState {
@@ -120,10 +121,44 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
 
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
+  const activeRoomRef = useRef<Room | null>(null);
   const [modalType, setModalType] = useState<ModalType>('none');
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingRoomCreation, setPendingRoomCreation] = useState<{ roomName: string; category?: string } | null>(null);
   const justCreatedRoomIdRef = useRef<string | null>(null);
+  const isLeavingRef = useRef<boolean>(false);
+  const currentUserIdRef = useRef<string>(currentUser.id);
+
+  useEffect(() => {
+    activeRoomRef.current = activeRoom;
+  }, [activeRoom]);
+
+  useEffect(() => {
+    currentUserIdRef.current = currentUser.id;
+  }, [currentUser.id]);
+
+  // Cleanly notify server if user closes tab or browser window
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const room = activeRoomRef.current;
+      const userId = currentUserIdRef.current;
+      if (room && userId) {
+        chatService.sendLeaveDirect(room.id, userId);
+        if (navigator.sendBeacon) {
+          const payload = JSON.stringify({ roomId: room.id, userId });
+          navigator.sendBeacon('/api/rooms/leave', payload);
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+    };
+  }, []);
 
   const [isLoadingRoom, setIsLoadingRoom] = useState<boolean>(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
@@ -350,6 +385,12 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           },
         ];
       });
+
+      // Show background audio chime and browser notification if user is in another tab
+      if (newMsg.senderId !== currentUser.id) {
+        showBackgroundNotification(newMsg.senderName, newMsg.content, activeRoomRef.current?.name);
+      }
+
       // If AI answered, reset thinking indicator
       if (newMsg.isAI) {
         setAiThinking({ isThinking: false });
@@ -457,7 +498,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
 
     const unsubVoiceAudio = chatService.onVoiceAudioChunk((data) => {
-      if (data.userId === currentUser.id) return;
+      // NEVER play our own voice chunks back to ourselves!
+      const myId = currentUserIdRef.current || currentUser.id;
+      if (!data.userId || data.userId === myId || (currentUser.id && data.userId === currentUser.id)) {
+        return;
+      }
       try {
         const audioSrc = `data:${data.mimeType};base64,${data.chunk}`;
         if (!audioQueueRef.current[data.userId]) {
@@ -492,6 +537,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Route & Room URL Validation Effect
   useEffect(() => {
+    if (isLeavingRef.current) {
+      if (currentPath === '/' || !urlRoomId) {
+        isLeavingRef.current = false;
+      }
+      return;
+    }
+
     if (currentPath === '/create-room') {
       setIsLoadingRoom(false);
       setModalType('create-room');
@@ -560,6 +612,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         setModalType('none');
         setIsLoadingMessages(true);
+        requestNotificationPermission().catch(() => {});
         chatService.connectToRoom(roomData.id, {
           id: effectiveUser.id,
           name: effectiveUser.name,
@@ -774,6 +827,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       setIsLoadingMessages(true);
+      requestNotificationPermission().catch(() => {});
       chatService.connectToRoom(roomData.id, {
         id: updatedUser.id,
         name: updatedUser.name,
@@ -789,9 +843,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const leaveRoom = () => {
+    isLeavingRef.current = true;
     chatService.leaveRoom();
     setActiveRoom(null);
     setPendingRoomId(null);
+    setPendingRoomCreation(null);
     setModalType('none');
     setMessages([]);
     setMembers([]);
@@ -824,7 +880,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
     setLiveKitDebugInfo(null);
     navigate('/');
-    showToast('شما از اتاق مطالعه خارج شدید.', 'info');
+    showToast('شما از کلاس خارج شدید.', 'info');
   };
 
   const sendMessage = (content: string): boolean => {
@@ -1013,7 +1069,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // 1. Proactively verify microphone permission with native prompt
         let micStream: MediaStream;
         try {
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: false,
+          });
         } catch (permErr: any) {
           console.error('[Voice] Mic permission denied:', permErr);
           setVoiceState((prev) => ({ ...prev, isConnecting: false }));

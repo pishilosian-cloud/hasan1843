@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
 import { RoomHeader } from './RoomHeader';
 import { VoiceRoomBar } from './VoiceRoomBar';
+import { LiveKitVoiceManager } from './LiveKitVoiceManager';
 import { RoomSidebar } from './RoomSidebar';
 import { AIPanel } from './AIPanel';
 import { ChatMessageItem } from './ChatMessageItem';
@@ -77,7 +78,8 @@ export const RoomView: React.FC = () => {
   }, [aiThinking?.isThinking, scrollToBottom]);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
+    <LiveKitVoiceManager>
+      <div className="h-screen w-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
       {/* Room Header */}
       <RoomHeader
         onOpenSidebarDrawer={() => setIsSidebarOpen(true)}
@@ -214,6 +216,7 @@ export const RoomView: React.FC = () => {
       >
         <AIPanel />
       </Drawer>
-    </div>
+      </div>
+    </LiveKitVoiceManager>
   );
 };

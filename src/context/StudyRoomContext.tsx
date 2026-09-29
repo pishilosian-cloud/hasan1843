@@ -15,6 +15,7 @@ import {
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
+import type { LiveKitDebugInfo } from '../components/room/LiveKitVoiceManager';
 
 export interface UploadProgressState {
   isUploading: boolean;
@@ -71,7 +72,9 @@ interface StudyRoomContextType {
   toggleVoiceCall: () => void;
   toggleMicrophone: () => void;
   copyRoomLink: () => void;
-  peerDiagnostics: { [userId: string]: { connectionState: string; iceConnectionState: string; localTrackEnabled: boolean; remoteTrackReadyState: string; playingState: string } };
+  liveKitDebugInfo: LiveKitDebugInfo | null;
+  updateLiveKitState: (state: Partial<LiveKitDebugInfo>) => void;
+  setVoiceMuteHandler: (handler: ((shouldMute: boolean) => Promise<void>) | null) => void;
 }
 
 const defaultUser: User = {
@@ -147,29 +150,56 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('studyroom_ai_mode', mode);
   };
 
-  const peerConnectionsRef = useRef<{ [userId: string]: RTCPeerConnection }>({});
-  const audioElementsRef = useRef<{ [userId: string]: HTMLAudioElement }>({});
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const iceServersRef = useRef<any[] | null>(null);
-  const speechDetectorRef = useRef<{ audioContext: AudioContext; analyzer: AnalyserNode; javascriptNode: ScriptProcessorNode; stream: MediaStream } | null>(null);
   const voiceStateRef = useRef<VoiceState>(voiceState);
-  const pendingCandidatesRef = useRef<{ [userId: string]: RTCIceCandidate[] }>({});
+  const [liveKitDebugInfo, setLiveKitDebugInfo] = useState<LiveKitDebugInfo | null>(null);
+  const voiceMuteHandlerRef = useRef<((shouldMute: boolean) => Promise<void>) | null>(null);
 
-  const [peerDiagnostics, setPeerDiagnostics] = useState<{ [userId: string]: { connectionState: string; iceConnectionState: string; localTrackEnabled: boolean; remoteTrackReadyState: string; playingState: string } }>({});
+  const setVoiceMuteHandler = useCallback((handler: ((shouldMute: boolean) => Promise<void>) | null) => {
+    voiceMuteHandlerRef.current = handler;
+  }, []);
 
-  const updatePeerDiagnostic = useCallback((userId: string, update: Partial<{ connectionState: string; iceConnectionState: string; localTrackEnabled: boolean; remoteTrackReadyState: string; playingState: string }>) => {
-    setPeerDiagnostics((prev) => {
-      const current = prev[userId] || {
-        connectionState: 'new',
-        iceConnectionState: 'new',
-        localTrackEnabled: true,
-        remoteTrackReadyState: 'none',
-        playingState: 'idle',
+  const updateLiveKitState = useCallback((state: Partial<LiveKitDebugInfo>) => {
+    setLiveKitDebugInfo((prev) => {
+      const current: LiveKitDebugInfo = prev || {
+        connectionState: 'idle',
+        roomName: '',
+        isConnected: false,
+        isReconnecting: false,
+        activeSpeakers: [],
+        localPublished: false,
+        localMuted: false,
+        participantCount: 0,
+        participants: [],
       };
-      return {
-        ...prev,
-        [userId]: { ...current, ...update },
-      };
+
+      const updated = { ...current, ...state };
+
+      // Sync activeSpeakers and members presence from LiveKit
+      if (state.activeSpeakers !== undefined || state.participants !== undefined) {
+        const speakers = state.activeSpeakers || current.activeSpeakers || [];
+        setVoiceState((vs) => ({
+          ...vs,
+          activeSpeakers: speakers,
+        }));
+
+        setMembers((prevMembers) =>
+          prevMembers.map((m) => {
+            const isSpeaker = speakers.includes(m.id);
+            const liveKitParticipant = state.participants?.find((p) => p.identity === m.id);
+            if (liveKitParticipant) {
+              return {
+                ...m,
+                isSpeaking: isSpeaker,
+                isMuted: liveKitParticipant.isMuted,
+                isVoiceActive: true,
+              };
+            }
+            return m;
+          })
+        );
+      }
+
+      return updated;
     });
   }, []);
 
@@ -376,18 +406,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           return m;
         })
       );
-
-      if (voiceStateRef.current.isCallActive && data.userId !== currentUser.id && data.isCallActive) {
-        // Glare prevention: only the peer with the lexicographically smaller ID initiates the offer
-        if (currentUser.id < data.userId) {
-          initiatePeerConnection(data.userId);
-        }
-      }
-    });
-
-    const unsubVoiceSignal = chatService.onVoiceSignal((data) => {
-      if (data.targetUserId !== currentUser.id) return;
-      handleIncomingVoiceSignal(data.senderId, data.signal);
     });
 
     return () => {
@@ -403,7 +421,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubStatus();
       unsubError();
       unsubVoiceState();
-      unsubVoiceSignal();
     };
   }, [currentUser.id, mapMembersToUsers, showToast]);
 
@@ -692,7 +709,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const leaveRoom = () => {
-    cleanupVoiceCall();
     chatService.leaveRoom();
     setActiveRoom(null);
     setPendingRoomId(null);
@@ -708,7 +724,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isMuted: false,
       isConnecting: false,
       activeSpeakers: [],
+      liveKitConfig: null,
     });
+    setLiveKitDebugInfo(null);
     navigate('/');
     showToast('شما از اتاق مطالعه خارج شدید.', 'info');
   };
@@ -861,368 +879,65 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  const initiatePeerConnection = async (targetUserId: string) => {
-    if (peerConnectionsRef.current[targetUserId]) {
-      return;
-    }
-
-    try {
-      console.log(`[WebRTC] Initiating PeerConnection to target user: ${targetUserId}`);
-      const pc = await createPeerConnection(targetUserId);
-      peerConnectionsRef.current[targetUserId] = pc;
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
-          pc.addTrack(track, localStreamRef.current!);
-        });
-      }
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      if (activeRoom) {
-        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, targetUserId, {
-          type: 'offer',
-          sdp: pc.localDescription?.sdp,
-        });
-      }
-    } catch (err) {
-      console.error(`[WebRTC] Failed to initiate PeerConnection to ${targetUserId}:`, err);
-    }
-  };
-
-  const createPeerConnection = async (targetUserId: string): Promise<RTCPeerConnection> => {
-    if (!iceServersRef.current) {
-      try {
-        const res = await fetch('/api/voice/ice-servers');
-        if (res.ok) {
-          const data = await res.json();
-          iceServersRef.current = data.iceServers;
-          console.log('[WebRTC] Dynamically fetched ICE configuration from server:', data.iceServers);
-        }
-      } catch (err) {
-        console.warn('[WebRTC] Failed to fetch server ICE configurations, falling back to Google STUN:', err);
-      }
-    }
-
-    const config = {
-      iceServers: iceServersRef.current || [
-        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
-      ]
-    };
-
-    const pc = new RTCPeerConnection(config);
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && activeRoom) {
-        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, targetUserId, {
-          type: 'candidate',
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC] Connection State to ${targetUserId}: ${pc.connectionState}`);
-      updatePeerDiagnostic(targetUserId, {
-        connectionState: pc.connectionState,
-      });
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC] ICE Connection State to ${targetUserId}: ${pc.iceConnectionState}`);
-      updatePeerDiagnostic(targetUserId, {
-        iceConnectionState: pc.iceConnectionState,
-      });
-
-      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        console.log(`[WebRTC] ICE Connection failed/disconnected for ${targetUserId}. Attempting reconnect...`);
-        handlePeerDisconnect(targetUserId);
-      } else if (pc.iceConnectionState === 'connected') {
-        pc.getStats().then((stats) => {
-          stats.forEach((report) => {
-            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-              const localCandidate = stats.get(report.localCandidateId);
-              const remoteCandidate = stats.get(report.remoteCandidateId);
-              if (localCandidate && remoteCandidate) {
-                console.log(`[WebRTC Diagnostic] Peer ${targetUserId} ICE link established via: Local=${localCandidate.candidateType} (${localCandidate.protocol}) | Remote=${remoteCandidate.candidateType}`);
-              }
-            }
-          });
-        });
-      }
-    };
-
-    pc.ontrack = (event) => {
-      console.log(`[WebRTC] Received remote audio track from ${targetUserId}, kind: ${event.track.kind}, readyState: ${event.track.readyState}`);
-      
-      let remoteStream = event.streams[0];
-      if (!remoteStream) {
-        console.log('[WebRTC] event.streams is empty, creating manual MediaStream wrapper around remote track');
-        remoteStream = new MediaStream([event.track]);
-      }
-
-      updatePeerDiagnostic(targetUserId, {
-        remoteTrackReadyState: event.track.readyState,
-        localTrackEnabled: localStreamRef.current?.getAudioTracks()[0]?.enabled ?? true,
-      });
-
-      playRemoteStream(targetUserId, remoteStream);
-    };
-
-    return pc;
-  };
-
-  const processQueuedCandidates = async (userId: string, pc: RTCPeerConnection) => {
-    const queue = pendingCandidatesRef.current[userId];
-    if (queue && queue.length > 0) {
-      console.log(`[WebRTC] Applying ${queue.length} queued ICE candidates for ${userId}`);
-      for (const candidate of queue) {
-        try {
-          await pc.addIceCandidate(candidate);
-        } catch (e) {
-          console.warn('[WebRTC] Failed to apply queued candidate:', e);
-        }
-      }
-      delete pendingCandidatesRef.current[userId];
-    }
-  };
-
-  const handleIncomingVoiceSignal = async (senderId: string, signal: any) => {
-    if (!activeRoom) return;
-
-    try {
-      let pc = peerConnectionsRef.current[senderId];
-
-      if (signal.type === 'offer') {
-        console.log(`[WebRTC] Received incoming offer from ${senderId}`);
-        if (pc) {
-          try { pc.close(); } catch {}
-        }
-
-        pc = await createPeerConnection(senderId);
-        peerConnectionsRef.current[senderId] = pc;
-
-        if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach((track) => {
-            pc.addTrack(track, localStreamRef.current!);
-          });
-        }
-
-        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        chatService.sendVoiceSignal(activeRoom.id, currentUser.id, senderId, {
-          type: 'answer',
-          sdp: pc.localDescription?.sdp,
-        });
-
-        await processQueuedCandidates(senderId, pc);
-      } else if (signal.type === 'answer') {
-        console.log(`[WebRTC] Received incoming answer from ${senderId}`);
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
-          await processQueuedCandidates(senderId, pc);
-        }
-      } else if (signal.type === 'candidate') {
-        if (pc && signal.candidate) {
-          const iceCandidate = new RTCIceCandidate(signal.candidate);
-          if (pc.remoteDescription && pc.remoteDescription.type) {
-            try {
-              await pc.addIceCandidate(iceCandidate);
-            } catch (e) {
-              console.warn('[WebRTC] Failed to add candidate directly:', e);
-            }
-          } else {
-            if (!pendingCandidatesRef.current[senderId]) {
-              pendingCandidatesRef.current[senderId] = [];
-            }
-            pendingCandidatesRef.current[senderId].push(iceCandidate);
-            console.log(`[WebRTC] Queued incoming ICE candidate from ${senderId} (remoteDesc not ready)`);
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[WebRTC] Error handling signal from ${senderId}:`, err);
-    }
-  };
-
-  const handlePeerDisconnect = (userId: string) => {
-    const pc = peerConnectionsRef.current[userId];
-    if (pc) {
-      try { pc.close(); } catch {}
-      delete peerConnectionsRef.current[userId];
-    }
-    stopRemoteStream(userId);
-
-    if (voiceStateRef.current.isCallActive) {
-      setTimeout(() => {
-        if (voiceStateRef.current.isCallActive) {
-          console.log(`[WebRTC] Attempting to reconnect PeerConnection for ${userId}...`);
-          initiatePeerConnection(userId);
-        }
-      }, 3000);
-    }
-  };
-
-  const playRemoteStream = (userId: string, stream: MediaStream) => {
-    let audio = audioElementsRef.current[userId];
-    if (!audio) {
-      audio = document.createElement('audio');
-      audio.autoplay = true;
-      audio.setAttribute('playsinline', 'true');
-      audio.muted = false;
-      audio.volume = 1.0;
-      audio.setAttribute('data-user-id', userId);
-      document.body.appendChild(audio);
-      audioElementsRef.current[userId] = audio;
-    }
-    
-    audio.srcObject = stream;
-    audio.muted = false;
-    audio.volume = 1.0;
-
-    audio.play()
-      .then(() => {
-        console.log(`[WebRTC] Audio is playing successfully for user: ${userId}`);
-        updatePeerDiagnostic(userId, {
-          playingState: 'playing',
-        });
-      })
-      .catch((err) => {
-        console.warn(`[WebRTC] Autoplay blocked or playback failed for user ${userId}:`, err);
-        updatePeerDiagnostic(userId, {
-          playingState: 'blocked',
-        });
-        showToast('مرورگر اجازه پخش خودکار صدا را نداد. لطفاً روی یک بخش از صفحه کلیک کنید تا صدا وصل شود.', 'info');
-      });
-  };
-
-  const stopRemoteStream = (userId: string) => {
-    const audio = audioElementsRef.current[userId];
-    if (audio) {
-      audio.srcObject = null;
-      audio.remove();
-      delete audioElementsRef.current[userId];
-    }
-  };
-
-  const setupSpeechDetector = (stream: MediaStream) => {
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContextClass) return;
-
-      const audioContext = new AudioContextClass();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyzer = audioContext.createAnalyser();
-      analyzer.fftSize = 512;
-      source.connect(analyzer);
-
-      const javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
-      analyzer.connect(javascriptNode);
-      javascriptNode.connect(audioContext.destination);
-
-      let isSpeakingLocal = false;
-      let silentTicks = 0;
-
-      javascriptNode.onaudioprocess = () => {
-        const array = new Uint8Array(analyzer.frequencyBinCount);
-        analyzer.getByteFrequencyData(array);
-        let values = 0;
-        const length = array.length;
-        for (let i = 0; i < length; i++) {
-          values += array[i];
-        }
-        const average = values / length;
-        
-        const threshold = 18; 
-        const currentlySpeaking = average > threshold;
-
-        if (currentlySpeaking) {
-          silentTicks = 0;
-          if (!isSpeakingLocal) {
-            isSpeakingLocal = true;
-            updateSpeakingState(true);
-          }
-        } else {
-          silentTicks++;
-          if (silentTicks > 15 && isSpeakingLocal) {
-            isSpeakingLocal = false;
-            updateSpeakingState(false);
-          }
-        }
-      };
-
-      speechDetectorRef.current = { audioContext, analyzer, javascriptNode, stream };
-    } catch (e) {
-      console.warn('Failed to setup speech detection:', e);
-    }
-  };
-
-  const updateSpeakingState = (isSpeaking: boolean) => {
-    if (!activeRoom) return;
-    
-    setMembers((prev) =>
-      prev.map((m) => (m.id === currentUser.id ? { ...m, isSpeaking } : m))
-    );
-
-    chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, voiceStateRef.current.isMuted, isSpeaking);
-  };
-
-  const cleanupVoiceCall = () => {
-    Object.keys(peerConnectionsRef.current).forEach((userId) => {
-      const pc = peerConnectionsRef.current[userId];
-      if (pc) {
-        try { pc.close(); } catch {}
-      }
-      stopRemoteStream(userId);
-    });
-    peerConnectionsRef.current = {};
-    setPeerDiagnostics({});
-
-    if (speechDetectorRef.current) {
-      try {
-        speechDetectorRef.current.javascriptNode.disconnect();
-        speechDetectorRef.current.analyzer.disconnect();
-        speechDetectorRef.current.audioContext.close();
-      } catch {}
-      speechDetectorRef.current = null;
-    }
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        try { track.stop(); } catch {}
-      });
-      localStreamRef.current = null;
-    }
-  };
-
   const toggleVoiceCall = async () => {
     if (!activeRoom) return;
 
     if (voiceState.isCallActive) {
-      cleanupVoiceCall();
+      // Clean up LiveKit Voice Session
       setVoiceState({
         isCallActive: false,
         isMuted: false,
         isConnecting: false,
         activeSpeakers: [],
+        liveKitConfig: null,
       });
+      setLiveKitDebugInfo(null);
       chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, false, false, false);
       showToast('تماس صوتی پایان یافت.', 'info');
     } else {
       setVoiceState((prev) => ({ ...prev, isConnecting: true }));
-      
+
       try {
-        console.log('[WebRTC] Requesting microphone access...');
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
-          console.error('[WebRTC] Mic permission denied:', err);
-          throw new Error('PERMISSION_DENIED');
+        console.log('[LiveKit] Checking microphone permission...');
+        // 1. Proactively verify microphone permission with native prompt
+        try {
+          const probeStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          // Stop probe stream tracks immediately so LiveKit SFU gets exclusive, clean mic control
+          probeStream.getTracks().forEach((t) => t.stop());
+        } catch (permErr: any) {
+          console.error('[LiveKit] Mic permission denied:', permErr);
+          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
+          showToast('دسترسی به میکروفون داده نشده است. لطفاً اجازه دسترسی به میکروفون را فعال کنید.', 'error');
+          return;
+        }
+
+        // 2. Request short-lived LiveKit SFU Token from backend with room isolation
+        console.log(`[LiveKit] Fetching room token for studyroom_${activeRoom.id}...`);
+        const tokenRes = await fetch('/api/voice/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomId: activeRoom.id,
+            participantIdentity: currentUser.id,
+            participantName: currentUser.name || 'کاربر',
+          }),
         });
 
-        localStreamRef.current = stream;
-        setupSpeechDetector(stream);
+        if (!tokenRes.ok) {
+          const errData = await tokenRes.json().catch(() => ({}));
+          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
+          showToast(errData.error || 'خطا در ارتباط با سرور صوتی LiveKit', 'error');
+          return;
+        }
+
+        const data = await tokenRes.json();
+        const { serverUrl, token, roomName } = data;
+
+        if (!serverUrl || !token) {
+          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
+          showToast('اطلاعات اتصال به سرور LiveKit ناقص است.', 'error');
+          return;
+        }
 
         setVoiceState({
           isCallActive: true,
@@ -1230,62 +945,54 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           isConnecting: false,
           connectedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
           activeSpeakers: [],
+          liveKitConfig: {
+            serverUrl,
+            token,
+            roomName,
+          },
         });
 
         chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
-        showToast('به تماس صوتی اتاق پیوستید.', 'success');
-
-        members.forEach((m) => {
-          if (m.id !== currentUser.id && m.isVoiceActive) {
-            // Glare prevention: only the peer with the lexicographically smaller ID initiates the offer
-            if (currentUser.id < m.id) {
-              initiatePeerConnection(m.id);
-            }
-          }
-        });
-
+        showToast('به تماس صوتی اتاق (LiveKit SFU) متصل شدید.', 'success');
       } catch (err: any) {
         setVoiceState({
           isCallActive: false,
           isMuted: false,
           isConnecting: false,
           activeSpeakers: [],
+          liveKitConfig: null,
         });
-
-        if (err.message === 'PERMISSION_DENIED') {
-          showToast('برای استفاده از تماس صوتی باید اجازه دسترسی به میکروفون را فعال کنید.', 'error');
-        } else {
-          showToast('خطایی در راه‌اندازی سخت‌افزار میکروفون پیش آمد. لطفاً اتصال دستگاه خود را بررسی کنید.', 'error');
-        }
+        showToast('خطا در اتصال به تماس صوتی LiveKit: ' + (err.message || 'نامشخص'), 'error');
       }
     }
   };
 
-  const toggleMicrophone = () => {
-    if (!activeRoom) return;
+  const toggleMicrophone = async () => {
+    if (!activeRoom || !voiceState.isCallActive) return;
 
-    setVoiceState((prev) => {
-      const nextMuted = !prev.isMuted;
-      
-      if (localStreamRef.current) {
-        localStreamRef.current.getAudioTracks().forEach((track) => {
-          track.enabled = !nextMuted;
-        });
+    const nextMuted = !voiceState.isMuted;
+
+    // Use registered LiveKit handler if available
+    if (voiceMuteHandlerRef.current) {
+      try {
+        await voiceMuteHandlerRef.current(nextMuted);
+      } catch (err) {
+        console.error('[LiveKit] Error toggling mic:', err);
       }
+    }
 
-      showToast(nextMuted ? 'میکروفون خاموش شد' : 'میکروفون روشن شد', nextMuted ? 'info' : 'success');
-      
-      setMembers((prevMembers) =>
-        prevMembers.map((m) => (m.id === currentUser.id ? { ...m, isMuted: nextMuted } : m))
-      );
+    setVoiceState((prev) => ({
+      ...prev,
+      isMuted: nextMuted,
+    }));
 
-      chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, nextMuted, false);
+    showToast(nextMuted ? 'میکروفون خاموش شد' : 'میکروفون روشن شد', nextMuted ? 'info' : 'success');
 
-      return {
-        ...prev,
-        isMuted: nextMuted,
-      };
-    });
+    setMembers((prevMembers) =>
+      prevMembers.map((m) => (m.id === currentUser.id ? { ...m, isMuted: nextMuted } : m))
+    );
+
+    chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, nextMuted, false);
   };
 
   const fallbackCopyText = (text: string) => {
@@ -1367,7 +1074,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         toggleVoiceCall,
         toggleMicrophone,
         copyRoomLink,
-        peerDiagnostics,
+        liveKitDebugInfo,
+        updateLiveKitState,
+        setVoiceMuteHandler,
       }}
     >
       {children}

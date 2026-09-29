@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
+import { AccessToken } from 'livekit-server-sdk';
 import type {
   RoomData,
   RoomMember,
@@ -1362,6 +1363,67 @@ app.get('/api/voice/ice-servers', (req, res) => {
   }
 
   res.json({ iceServers });
+});
+
+// 8. Generate LiveKit Token for SFU Voice Chat with Strict Room Isolation
+app.post('/api/voice/token', async (req, res) => {
+  try {
+    const { roomId, participantIdentity, participantName } = req.body || {};
+
+    if (!roomId) {
+      return res.status(400).json({ error: 'شناسه اتاق (roomId) الزامی است.' });
+    }
+
+    const room = findRoomCaseInsensitive(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'این اتاق پیدا نشد یا لینک آن منقضی شده است.' });
+    }
+
+    const identity = String(participantIdentity || `user-${Date.now()}`).trim();
+    const name = String(participantName || identity).trim();
+
+    const livekitUrl = (process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || '').trim();
+    const apiKey = (process.env.LIVEKIT_API_KEY || '').trim();
+    const apiSecret = (process.env.LIVEKIT_API_SECRET || '').trim();
+
+    const livekitRoomName = `studyroom_${room.id.toLowerCase()}`;
+
+    if (!apiKey || !apiSecret || !livekitUrl) {
+      return res.status(503).json({
+        error: 'تنظیمات سرور LiveKit بر روی محیط اجرای سرور (Railway) تعریف نشده است. لطفاً متغیرهای LIVEKIT_URL، LIVEKIT_API_KEY و LIVEKIT_API_SECRET را در بخش Variables سرور تنظیم کنید.',
+        isConfigured: false,
+        livekitUrl: livekitUrl || null,
+        roomName: livekitRoomName,
+      });
+    }
+
+    const at = new AccessToken(apiKey, apiSecret, {
+      identity,
+      name,
+      ttl: '1h',
+    });
+
+    at.addGrant({
+      roomJoin: true,
+      room: livekitRoomName,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+
+    const token = await at.toJwt();
+
+    return res.json({
+      serverUrl: livekitUrl,
+      token,
+      roomName: livekitRoomName,
+      participantIdentity: identity,
+      participantName: name,
+    });
+  } catch (err: any) {
+    console.error('[LiveKit Token Error]', err);
+    return res.status(500).json({ error: 'خطا در صدور توکن لایوکیت', details: err.message });
+  }
 });
 
 /**

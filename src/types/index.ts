@@ -114,12 +114,19 @@ export interface PamphletFile {
   totalChunks?: number;
 }
 
+export interface LiveKitConfig {
+  token: string;
+  serverUrl: string;
+  roomName: string;
+}
+
 export interface VoiceState {
   isCallActive: boolean;
   isMuted: boolean;
   isConnecting: boolean;
   connectedAt?: string;
   activeSpeakers: string[];
+  liveKitConfig?: LiveKitConfig | null;
 }
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';

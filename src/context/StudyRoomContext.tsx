@@ -274,8 +274,27 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const prevStatusRef = useRef<ConnectionStatus>('disconnected');
   const audioQueueRef = useRef<{ [userId: string]: string[] }>({});
   const isPlayingRef = useRef<{ [userId: string]: boolean }>({});
+  const activeAudioElementsRef = useRef<HTMLAudioElement[]>([]);
+
+  const stopAndClearAllAudio = useCallback(() => {
+    activeAudioElementsRef.current.forEach((audio) => {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = '';
+      } catch {}
+    });
+    activeAudioElementsRef.current = [];
+    audioQueueRef.current = {};
+    isPlayingRef.current = {};
+  }, []);
 
   const playNextAudioChunk = useCallback((userId: string) => {
+    if (!voiceStateRef.current.isCallActive) {
+      stopAndClearAllAudio();
+      return;
+    }
+
     const queue = audioQueueRef.current[userId];
     if (!queue || queue.length === 0) {
       isPlayingRef.current[userId] = false;
@@ -292,19 +311,36 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       const audio = new Audio(nextSrc);
       audio.volume = 1.0;
+      activeAudioElementsRef.current.push(audio);
+
+      const cleanup = () => {
+        activeAudioElementsRef.current = activeAudioElementsRef.current.filter((a) => a !== audio);
+      };
+
       audio.onended = () => {
-        playNextAudioChunk(userId);
+        cleanup();
+        if (voiceStateRef.current.isCallActive) {
+          playNextAudioChunk(userId);
+        }
       };
       audio.onerror = () => {
-        playNextAudioChunk(userId);
+        cleanup();
+        if (voiceStateRef.current.isCallActive) {
+          playNextAudioChunk(userId);
+        }
       };
       audio.play().catch(() => {
-        playNextAudioChunk(userId);
+        cleanup();
+        if (voiceStateRef.current.isCallActive) {
+          playNextAudioChunk(userId);
+        }
       });
     } catch {
-      playNextAudioChunk(userId);
+      if (voiceStateRef.current.isCallActive) {
+        playNextAudioChunk(userId);
+      }
     }
-  }, []);
+  }, [stopAndClearAllAudio]);
 
   useEffect(() => {
     const unsubInit = chatService.onInit((data) => {
@@ -458,6 +494,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const unsubVoiceAudio = chatService.onVoiceAudioChunk((data) => {
       if (data.userId === currentUser.id) return;
+      // ONLY receive and play voice if the current user is active inside the voice call
+      if (!voiceStateRef.current.isCallActive) return;
+
       try {
         const audioSrc = `data:${data.mimeType};base64,${data.chunk}`;
         if (!audioQueueRef.current[data.userId]) {
@@ -800,6 +839,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsAskingAI(false);
     setAiThinking({ isThinking: false });
 
+    stopAndClearAllAudio();
+
     if (previewMediaRecorderRef.current) {
       try { previewMediaRecorderRef.current.stop(); } catch {}
       previewMediaRecorderRef.current = null;
@@ -979,6 +1020,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!activeRoom) return;
 
     if (voiceState.isCallActive) {
+      // Immediately stop all playing audio and clear playback queues
+      stopAndClearAllAudio();
+
       // Clean up Preview Audio & LiveKit Voice Session
       if (previewMediaRecorderRef.current) {
         try { previewMediaRecorderRef.current.stop(); } catch {}
@@ -1009,11 +1053,20 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setVoiceState((prev) => ({ ...prev, isConnecting: true }));
 
       try {
-        console.log('[Voice] Checking microphone permission...');
-        // 1. Proactively verify microphone permission with native prompt
+        console.log('[Voice] Checking microphone permission with noise suppression...');
+        // 1. Proactively verify microphone permission with native prompt and noise cancellation
         let micStream: MediaStream;
         try {
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: { ideal: true },
+              noiseSuppression: { ideal: true },
+              autoGainControl: { ideal: true },
+              channelCount: { ideal: 1 },
+              sampleRate: { ideal: 48000 },
+            },
+            video: false,
+          });
         } catch (permErr: any) {
           console.error('[Voice] Mic permission denied:', permErr);
           setVoiceState((prev) => ({ ...prev, isConnecting: false }));
@@ -1052,6 +1105,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
 
         if (isPreviewMode) {
+          // Optimize mic track for speech DSP & noise isolation
+          micStream.getAudioTracks().forEach((track) => {
+            if ('contentHint' in track) {
+              (track as any).contentHint = 'speech';
+            }
+          });
+
           // StudyRoom Built-in Preview SFU Audio Relay (Active for instant testing in preview environment)
           previewMediaStreamRef.current = micStream;
 
@@ -1063,13 +1123,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             let isRecordingLoop = true;
 
             const recordSlice = () => {
-              if (!previewMediaStreamRef.current) return;
+              if (!previewMediaStreamRef.current || !voiceStateRef.current.isCallActive) return;
               try {
                 const rec = new MediaRecorder(micStream, { mimeType, audioBitsPerSecond: 32000 });
                 previewMediaRecorderRef.current = rec;
 
                 rec.ondataavailable = (e) => {
-                  if (e.data && e.data.size > 200 && !voiceStateRef.current.isMuted) {
+                  if (e.data && e.data.size > 200 && voiceStateRef.current.isCallActive && !voiceStateRef.current.isMuted) {
                     const reader = new FileReader();
                     reader.onloadend = () => {
                       const resultStr = reader.result as string;

@@ -1033,6 +1033,172 @@ app.delete('/api/rooms/:roomId/pamphlets/:fileId', (req, res) => {
   res.json({ message: 'جزوه با موفقیت حذف شد.' });
 });
 
+// 1.1 Parallel Chunk Upload Endpoint
+app.post('/api/rooms/:roomId/pamphlets/upload-chunk', upload.single('file'), async (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'قطعه فایل ارسال نشده است' });
+  }
+
+  const { uploadId, chunkIndex } = req.body;
+  if (!uploadId || chunkIndex === undefined) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(400).json({ error: 'اطلاعات فراداده قطعه ناقص است' });
+  }
+
+  const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+  if (!fs.existsSync(chunksDir)) {
+    fs.mkdirSync(chunksDir, { recursive: true });
+  }
+
+  const chunkPath = path.join(chunksDir, `chunk_${chunkIndex}`);
+  try {
+    fs.renameSync(req.file.path, chunkPath);
+  } catch {
+    fs.copyFileSync(req.file.path, chunkPath);
+    try { fs.unlinkSync(req.file.path); } catch {}
+  }
+
+  res.json({ success: true });
+});
+
+// 1.2 Chunk Assembly Endpoint
+app.post('/api/rooms/:roomId/pamphlets/assemble', async (req, res) => {
+  const room = findRoomCaseInsensitive(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'اتاق پیدا نشد' });
+  }
+
+  const { uploadId, fileName, fileSize, fileType, totalChunks, uploadedBy } = req.body;
+  if (!uploadId || !fileName || totalChunks === undefined) {
+    return res.status(400).json({ error: 'اطلاعات سرهم‌بندی ناقص است' });
+  }
+
+  const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+  if (!fs.existsSync(chunksDir)) {
+    return res.status(400).json({ error: 'پوشه قطعات پیدا نشد' });
+  }
+
+  const fileId = `pamp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const ext = (fileType || path.extname(fileName).replace('.', '') || 'FILE').toUpperCase();
+  const targetPath = pamphletProcessor.getUploadPath(room.id, fileId, fileName);
+
+  try {
+    // Perform robust synchronous-style file assembly via write streams
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const writeStream = fs.createWriteStream(targetPath);
+      writeStream.on('error', (err) => rejectPromise(err));
+      writeStream.on('finish', () => resolvePromise());
+
+      try {
+        for (let i = 0; i < totalChunks; i++) {
+          const chunkPath = path.join(chunksDir, `chunk_${i}`);
+          if (!fs.existsSync(chunkPath)) {
+            throw new Error(`قطعه شماره ${i} مفقود شده است`);
+          }
+          const data = fs.readFileSync(chunkPath);
+          writeStream.write(data);
+        }
+        writeStream.end();
+      } catch (err) {
+        writeStream.end();
+        rejectPromise(err);
+      }
+    });
+
+    // Cleanup chunks
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkPath = path.join(chunksDir, `chunk_${i}`);
+        if (fs.existsSync(chunkPath)) fs.unlinkSync(chunkPath);
+      }
+      fs.rmdirSync(chunksDir);
+    } catch {}
+
+    const formattedSize =
+      fileSize < 1024 * 1024
+        ? `${(fileSize / 1024).toFixed(0)} کیلوبایت`
+        : `${(fileSize / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+    const newPamphlet: PamphletFile = {
+      id: fileId,
+      roomId: room.id,
+      name: fileName,
+      size: formattedSize,
+      type: ext,
+      uploadedBy: uploadedBy || 'کاربر',
+      createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
+      status: 'processing',
+      processedPages: 0,
+      progressPercent: 0,
+      totalChunks: 0,
+    };
+
+    if (!roomPamphlets.has(room.id)) {
+      roomPamphlets.set(room.id, []);
+    }
+    roomPamphlets.get(room.id)!.push(newPamphlet);
+    saveStateToDisk();
+
+    broadcastToRoom(room.id, {
+      type: 'pamphlet-added',
+      roomId: room.id,
+      pamphlet: newPamphlet,
+    });
+
+    const job: ProcessingJob = {
+      fileId,
+      roomId: room.id,
+      fileName,
+      filePath: targetPath,
+      fileType: ext,
+      totalPages: 0,
+      processedPages: 0,
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    saveJobCheckpoint(job);
+
+    pamphletProcessor.processDocument(job, (progress) => {
+      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+      if (p) {
+        p.status = progress.status;
+        p.processedPages = progress.current;
+        p.pagesCount = progress.total;
+        p.progressPercent = progress.percent;
+        p.error = progress.error;
+      }
+      saveStateToDisk();
+
+      broadcastToRoom(room.id, {
+        type: 'pamphlet-progress',
+        roomId: room.id,
+        fileId,
+        fileName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    }).catch((err) => {
+      console.error(`[PAMPHLET LOG ERROR] Upload Processing Error for ${fileId}:`, err);
+    });
+
+    res.status(201).json(newPamphlet);
+  } catch (err: any) {
+    console.error('[PAMPHLET ASSEMBLE ERROR]:', err);
+    res.status(500).json({ error: err.message || 'خطا در مونتاژ و سرهم‌بندی فایل' });
+  }
+});
+
 // 1. Direct Multi-part Streamed Upload: Independent of client connection to Gemini
 app.post('/api/rooms/:roomId/pamphlets/upload', upload.single('file'), async (req, res) => {
   const room = findRoomCaseInsensitive(req.params.roomId);

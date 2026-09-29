@@ -1435,43 +1435,6 @@ app.post('/api/voice/token', async (req, res) => {
 });
 
 /**
- * Direct Beacon API for instantaneous room leave when browser tab is closed
- */
-app.post('/api/rooms/leave', express.text({ type: '*/*' }), (req, res) => {
-  try {
-    let payload: any = req.body;
-    if (typeof payload === 'string') {
-      try { payload = JSON.parse(payload); } catch {}
-    }
-    const { roomId, userId } = payload || {};
-    if (roomId && userId) {
-      const room = findRoomCaseInsensitive(roomId);
-      if (room) {
-        const member = room.members.find((m) => m.id === userId);
-        if (member) {
-          member.isOnline = false;
-          saveStateToDisk();
-          broadcastToRoom(room.id, {
-            type: 'presence-update',
-            roomId: room.id,
-            members: room.members,
-          });
-          broadcastToRoom(room.id, {
-            type: 'voice-state-update',
-            roomId: room.id,
-            userId,
-            isSpeaking: false,
-            isMuted: false,
-            isCallActive: false,
-          });
-        }
-      }
-    }
-  } catch {}
-  res.status(200).send('OK');
-});
-
-/**
  * Generate Answer using Gemini 3.8 Flash
  * - Search relevant chunks with strict Room Isolation
  * - Passes ONLY the relevant chunks with pageNumber metadata to Gemini
@@ -1905,7 +1868,7 @@ wss.on('connection', (ws: WebSocket) => {
         const room = findRoomCaseInsensitive(msg.roomId);
         if (!room) return;
 
-        // Strict Room Isolation: Broadcast audio chunk ONLY to OTHER clients in this specific room
+        // Strict Room Isolation: Broadcast audio chunk ONLY to other clients in this specific room
         const clients = roomClients.get(room.id);
         if (clients) {
           const payload = JSON.stringify({
@@ -1917,12 +1880,8 @@ wss.on('connection', (ws: WebSocket) => {
           });
 
           for (const client of clients) {
-            // NEVER send audio back to the sender socket itself, nor to any client with the same userId!
-            if (client === ws) continue;
             const meta = clientMetadata.get(client);
-            if (meta && meta.userId === msg.userId) continue;
-
-            if (client.readyState === WebSocket.OPEN) {
+            if (meta && meta.userId !== msg.userId && client.readyState === WebSocket.OPEN) {
               client.send(payload);
             }
           }
@@ -1980,8 +1939,6 @@ function handleClientLeave(ws: WebSocket) {
   if (!meta || !meta.roomId) return;
 
   const { roomId, userId } = meta;
-  clientMetadata.delete(ws);
-
   const clients = roomClients.get(roomId);
   if (clients) {
     clients.delete(ws);
@@ -2010,20 +1967,10 @@ function handleClientLeave(ws: WebSocket) {
       }
 
       saveStateToDisk();
-
       broadcastToRoom(roomId, {
         type: 'presence-update',
         roomId,
         members: room.members,
-      });
-
-      broadcastToRoom(roomId, {
-        type: 'voice-state-update',
-        roomId,
-        userId,
-        isSpeaking: false,
-        isMuted: false,
-        isCallActive: false,
       });
     }
   }

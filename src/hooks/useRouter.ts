@@ -84,9 +84,11 @@ export function useRouter() {
 
   const navigate = useCallback((path: string) => {
     if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', path);
-      setCurrentPath(path);
-      setExtractedId(extractRoomIdFromLocation());
+      if (window.location.pathname !== path) {
+        window.history.pushState({}, '', path);
+        setCurrentPath(path);
+        setExtractedId(extractRoomIdFromLocation());
+      }
     }
   }, []);
 

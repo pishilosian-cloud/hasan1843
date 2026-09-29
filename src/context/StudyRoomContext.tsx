@@ -155,6 +155,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('studyroom_theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch {}
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
@@ -318,10 +322,16 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   useEffect(() => {
+    try {
+      localStorage.setItem('studyroom_theme', theme);
+    } catch {}
+
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
+      document.body.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
+      document.body.classList.remove('dark');
     }
   }, [theme]);
 
@@ -680,6 +690,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         setModalType('none');
         setIsLoadingMessages(true);
+        setConnectionStatus('connected');
         chatService.connectToRoom(roomData.id, {
           id: effectiveUser.id,
           name: effectiveUser.name,

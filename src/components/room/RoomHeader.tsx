@@ -59,11 +59,16 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
               <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-0.5">
                 <span
                   className={`w-2 h-2 rounded-full shrink-0 ${
-                    isConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-ping'
+                    connectionStatus === 'reconnecting' ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'
                   }`}
-                  title={isConnected ? 'متصل به سرور چت' : 'در حال اتصال'}
+                  title={connectionStatus === 'reconnecting' ? 'در حال اتصال مجدد' : 'متصل به سرور چت'}
                 />
-                <span className="whitespace-nowrap">{onlineCount} آنلاین</span>
+                <span className="whitespace-nowrap">{onlineCount > 0 ? `${onlineCount} آنلاین` : 'آنلاین'}</span>
+                {connectionStatus === 'reconnecting' && (
+                  <span className="text-[10px] text-amber-500 font-medium whitespace-nowrap">
+                    (در حال اتصال...)
+                  </span>
+                )}
               </p>
             </div>
           </div>

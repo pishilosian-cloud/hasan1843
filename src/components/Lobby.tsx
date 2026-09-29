@@ -54,18 +54,16 @@ export const Lobby: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200" dir="rtl">
       {/* Top Header Bar - 3 Zone Top Bar */}
-      <header className="sticky top-0 z-40 w-full border-b border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md px-4 sm:px-8 py-3.5 transition-colors">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-40 w-full border-b border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md px-3 sm:px-8 py-2.5 sm:py-3.5 transition-colors">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
           {/* Zone 1: Wordmark Logo */}
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-sky-500 flex items-center justify-center text-white font-extrabold shadow-sm shadow-indigo-500/30">
-              <GraduationCap className="w-5 h-5" />
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-sky-500 flex items-center justify-center text-white font-extrabold shadow-sm shadow-indigo-500/30 shrink-0">
+              <GraduationCap className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
-            <div className="flex flex-col">
-              <span className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
-                StudyRoom
-              </span>
-            </div>
+            <span className="text-base sm:text-lg font-black tracking-tight text-slate-900 dark:text-white">
+              StudyRoom
+            </span>
           </div>
 
           {/* Zone 2: Navigation / Highlights */}
@@ -76,12 +74,12 @@ export const Lobby: React.FC = () => {
           </nav>
 
           {/* Zone 3: Actions */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <PWAInstallButton />
             
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              className="p-2 min-w-[36px] min-h-[36px] rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition-colors cursor-pointer flex items-center justify-center shrink-0"
               title={theme === 'dark' ? 'حالت روشن' : 'حالت تاریک'}
             >
               {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}

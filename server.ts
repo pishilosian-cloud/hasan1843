@@ -1740,15 +1740,21 @@ ${modeInstruction}
     parts: latestParts,
   });
 
-  // Select candidate models: Simple mode -> gemini-3.6-flash, Complex mode -> gemini-3.8-flash (with free extended thinking)
+  // Select candidate models prioritizing the latest generation models (Gemini 3.8 / 3.7 / flash-latest)
   const candidateModels = mode === 'complex'
     ? [
         'gemini-3.8-flash',
-        'gemini-3.6-flash'
+        'gemini-3.7-flash',
+        'gemini-flash-latest',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite'
       ]
     : [
-        'gemini-3.6-flash',
-        'gemini-3.8-flash'
+        'gemini-3.8-flash',
+        'gemini-3.7-flash',
+        'gemini-flash-latest',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite'
       ];
   let lastError: unknown = null;
   let answerText = '';
@@ -1763,9 +1769,6 @@ ${modeInstruction}
           config: {
             systemInstruction,
             temperature: mode === 'complex' ? 0.4 : 0.7,
-            thinkingConfig: modelName.includes('3.8')
-              ? { thinkingBudget: 4096 } // Full 4096 thinking tokens for deep extended reasoning
-              : undefined,
           },
         });
 

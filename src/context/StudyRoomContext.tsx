@@ -1123,39 +1123,70 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             let isRecordingLoop = true;
 
             const recordSlice = () => {
-              if (!previewMediaStreamRef.current || !voiceStateRef.current.isCallActive) return;
+              if (
+                !previewMediaStreamRef.current ||
+                !voiceStateRef.current.isCallActive
+              ) {
+                return;
+              }
+
               try {
-                const rec = new MediaRecorder(micStream, { mimeType, audioBitsPerSecond: 32000 });
+                const rec = new MediaRecorder(micStream, {
+                  mimeType,
+                  audioBitsPerSecond: 32000,
+                });
+
                 previewMediaRecorderRef.current = rec;
 
                 rec.ondataavailable = (e) => {
-                  if (e.data && e.data.size > 200 && voiceStateRef.current.isCallActive && !voiceStateRef.current.isMuted) {
+                  if (
+                    e.data &&
+                    e.data.size > 200 &&
+                    voiceStateRef.current.isCallActive &&
+                    !voiceStateRef.current.isMuted
+                  ) {
                     const reader = new FileReader();
+
                     reader.onloadend = () => {
                       const resultStr = reader.result as string;
-                      if (resultStr && resultStr.includes(',')) {
-                        const base64data = resultStr.split(',')[1];
-                        if (base64data && activeRoom) {
-                          chatService.sendVoiceAudioChunk(activeRoom.id, currentUser.id, base64data, mimeType);
-                        }
+                      const base64Data = resultStr.split(',')[1];
+
+                      if (base64Data && activeRoom) {
+                        chatService.sendVoiceAudioChunk(
+                          activeRoom.id,
+                          currentUser.id,
+                          base64Data,
+                          mimeType
+                        );
                       }
                     };
+
                     reader.readAsDataURL(e.data);
                   }
                 };
 
+                rec.onstop = () => {
+                  if (
+                    isRecordingLoop &&
+                    voiceStateRef.current.isCallActive
+                  ) {
+                    // فاصله بسیار کوتاه برای جلوگیری از ایجاد شکاف محسوس
+                    setTimeout(recordSlice, 15);
+                  }
+                };
+
+                // کاهش اندازه chunk از 350ms به 200ms
                 rec.start();
+
                 setTimeout(() => {
                   if (rec.state === 'recording') {
-                    try { rec.stop(); } catch {}
+                    try {
+                      rec.stop();
+                    } catch {}
                   }
-                  if (isRecordingLoop && previewMediaStreamRef.current) {
-                    recordSlice();
-                  }
-                }, 400);
-              } catch (err) {
-                console.warn('[Slice rec err]', err);
-              }
+                }, 200);
+
+              } catch {}
             };
 
             recordSlice();

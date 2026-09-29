@@ -167,6 +167,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const previewMediaStreamRef = useRef<MediaStream | null>(null);
   const previewMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const previewAudioContextRef = useRef<AudioContext | null>(null);
+  const previewScriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
   const setVoiceMuteHandler = useCallback((handler: ((shouldMute: boolean) => Promise<void>) | null) => {
     voiceMuteHandlerRef.current = handler;
@@ -285,44 +286,57 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     scheduledPlaybackTimesRef.current = {};
   }, []);
 
-  const playIncomingVoiceChunk = useCallback(async (userId: string, base64Data: string) => {
+  const playIncomingVoiceChunk = useCallback(async (userId: string, base64Data: string, mimeType?: string) => {
     if (!voiceStateRef.current.isCallActive) {
       stopAndClearAllAudio();
       return;
     }
 
     try {
-      // Decode Base64 to ArrayBuffer synchronously in microseconds
+      // Decode Base64 to binary bytes
       const binaryString = window.atob(base64Data);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      const arrayBuffer = bytes.buffer;
 
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
 
       if (!playbackAudioCtxRef.current || playbackAudioCtxRef.current.state === 'closed') {
-        playbackAudioCtxRef.current = new AudioCtx();
+        playbackAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
       }
 
       const ctx = playbackAudioCtxRef.current;
       if (ctx.state === 'suspended') {
-        await ctx.resume();
+        await ctx.resume().catch(() => {});
       }
 
-      // Fast native C++ Web Audio decoding (under 2ms)
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      let audioBuffer: AudioBuffer;
+
+      // Direct PCM 24kHz Int16 linear decoding (instant, zero encoder artifact)
+      if (mimeType === 'audio/pcm-24k' || (bytes.byteLength % 2 === 0 && !mimeType?.includes('webm'))) {
+        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+        const sampleCount = int16.length;
+        const float32 = new Float32Array(sampleCount);
+        for (let i = 0; i < sampleCount; i++) {
+          float32[i] = int16[i] / (int16[i] < 0 ? 32768 : 32767);
+        }
+        audioBuffer = ctx.createBuffer(1, sampleCount, 24000);
+        audioBuffer.getChannelData(0).set(float32);
+      } else {
+        audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      }
+
       if (!audioBuffer || !voiceStateRef.current.isCallActive) return;
 
       const now = ctx.currentTime;
       let scheduledTime = scheduledPlaybackTimesRef.current[userId] || 0;
 
-      // Anti-Drift & Anti-Lag: If scheduled time is behind now or more than 280ms ahead, snap to now + 15ms
-      if (scheduledTime < now || scheduledTime > now + 0.28) {
-        scheduledTime = now + 0.015;
+      // Jitter buffer synchronization: if clock drifted or network paused, smoothly snap to now + 35ms
+      if (scheduledTime < now || scheduledTime > now + 0.35) {
+        scheduledTime = now + 0.035;
       }
 
       const source = ctx.createBufferSource();
@@ -332,7 +346,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       scheduledPlaybackTimesRef.current[userId] = scheduledTime + audioBuffer.duration;
     } catch {
-      // Ignore individual corrupted packet decode errors gracefully
+      // Ignore corrupted packet decode errors gracefully
     }
   }, [stopAndClearAllAudio]);
 
@@ -492,7 +506,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!voiceStateRef.current.isCallActive) return;
 
       if (data.chunk) {
-        playIncomingVoiceChunk(data.userId, data.chunk);
+        playIncomingVoiceChunk(data.userId, data.chunk, data.mimeType);
       }
     });
 
@@ -825,6 +839,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     stopAndClearAllAudio();
 
+    if (previewScriptProcessorRef.current) {
+      try {
+        previewScriptProcessorRef.current.disconnect();
+        previewScriptProcessorRef.current.onaudioprocess = null;
+      } catch {}
+      previewScriptProcessorRef.current = null;
+    }
     if (previewMediaRecorderRef.current) {
       try { previewMediaRecorderRef.current.stop(); } catch {}
       previewMediaRecorderRef.current = null;
@@ -1008,6 +1029,13 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       stopAndClearAllAudio();
 
       // Clean up Preview Audio & LiveKit Voice Session
+      if (previewScriptProcessorRef.current) {
+        try {
+          previewScriptProcessorRef.current.disconnect();
+          previewScriptProcessorRef.current.onaudioprocess = null;
+        } catch {}
+        previewScriptProcessorRef.current = null;
+      }
       if (previewMediaRecorderRef.current) {
         try { previewMediaRecorderRef.current.stop(); } catch {}
         previewMediaRecorderRef.current = null;
@@ -1107,99 +1135,59 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           };
 
           try {
-            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-              ? 'audio/webm;codecs=opus'
-              : 'audio/webm';
-
-            let isRecordingLoop = true;
-
-            const recordSlice = () => {
-              if (!previewMediaStreamRef.current || !voiceStateRef.current.isCallActive) {
-                return;
-              }
-
-              try {
-                const rec = new MediaRecorder(micStream, {
-                  mimeType,
-                  audioBitsPerSecond: 32000,
-                });
-
-                previewMediaRecorderRef.current = rec;
-
-                rec.ondataavailable = async (e) => {
-                  if (
-                    e.data &&
-                    e.data.size > 80 &&
-                    voiceStateRef.current.isCallActive &&
-                    !voiceStateRef.current.isMuted
-                  ) {
-                    try {
-                      const arrayBuffer = await e.data.arrayBuffer();
-                      const bytes = new Uint8Array(arrayBuffer);
-                      let binary = '';
-                      const chunkSz = 8192;
-                      for (let i = 0; i < bytes.length; i += chunkSz) {
-                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz) as any);
-                      }
-                      const base64Data = window.btoa(binary);
-
-                      if (base64Data && activeRoom) {
-                        chatService.sendVoiceAudioChunk(
-                          activeRoom.id,
-                          currentUser.id,
-                          base64Data,
-                          mimeType
-                        );
-                      }
-                    } catch {}
-                  }
-                };
-
-                rec.onstop = () => {
-                  if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                    setTimeout(recordSlice, 8);
-                  }
-                };
-
-                rec.onerror = () => {
-                  if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                    setTimeout(recordSlice, 40);
-                  }
-                };
-
-                rec.start();
-
-                setTimeout(() => {
-                  if (rec.state === 'recording') {
-                    try {
-                      rec.stop();
-                    } catch {}
-                  }
-                }, 160);
-
-              } catch (err) {
-                console.warn('[Slice rec err]', err);
-                if (isRecordingLoop && previewMediaStreamRef.current && voiceStateRef.current.isCallActive) {
-                  setTimeout(recordSlice, 60);
-                }
-              }
-            };
-
-            recordSlice();
-          } catch (recErr) {
-            console.warn('[Preview Recorder Init]', recErr);
-          }
-
-          // Volume analyser for live speaking indicator
-          try {
             const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
             if (AudioCtx) {
-              const ctx = new AudioCtx();
-              previewAudioContextRef.current = ctx;
-              const src = ctx.createMediaStreamSource(micStream);
-              const analyser = ctx.createAnalyser();
+              const audioCtx = new AudioCtx({ sampleRate: 24000 });
+              previewAudioContextRef.current = audioCtx;
+
+              const source = audioCtx.createMediaStreamSource(micStream);
+              // 2048 samples at 24kHz = exactly 85ms buffer of continuous gapless audio
+              const processor = audioCtx.createScriptProcessor(2048, 1, 1);
+              previewScriptProcessorRef.current = processor;
+
+              const muteGain = audioCtx.createGain();
+              muteGain.gain.value = 0;
+
+              processor.onaudioprocess = (e) => {
+                if (!previewMediaStreamRef.current || !voiceStateRef.current.isCallActive || voiceStateRef.current.isMuted) {
+                  return;
+                }
+
+                const inputChannel = e.inputBuffer.getChannelData(0);
+                const len = inputChannel.length;
+                const int16 = new Int16Array(len);
+                for (let i = 0; i < len; i++) {
+                  const s = Math.max(-1, Math.min(1, inputChannel[i]));
+                  int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+
+                // Fast binary conversion
+                const bytes = new Uint8Array(int16.buffer);
+                let binary = '';
+                const chunkSz = 8192;
+                for (let i = 0; i < bytes.length; i += chunkSz) {
+                  binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz) as any);
+                }
+                const base64Data = window.btoa(binary);
+
+                if (base64Data && activeRoom) {
+                  chatService.sendVoiceAudioChunk(
+                    activeRoom.id,
+                    currentUser.id,
+                    base64Data,
+                    'audio/pcm-24k'
+                  );
+                }
+              };
+
+              source.connect(processor);
+              processor.connect(muteGain);
+              muteGain.connect(audioCtx.destination);
+
+              // Volume analyser for live speaking indicator
+              const analyser = audioCtx.createAnalyser();
               analyser.fftSize = 256;
-              src.connect(analyser);
+              source.connect(analyser);
 
               const checkSpeaking = () => {
                 if (!previewMediaStreamRef.current) return;
@@ -1221,7 +1209,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               };
               requestAnimationFrame(checkSpeaking);
             }
-          } catch {}
+          } catch (ctxErr) {
+            console.warn('[AudioContext Streaming Init Error]', ctxErr);
+          }
 
           setVoiceState({
             isCallActive: true,

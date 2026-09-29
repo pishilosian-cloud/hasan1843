@@ -58,7 +58,7 @@ interface StudyRoomContextType {
   clearRoomError: () => void;
 
   createRoom: (roomName: string, category?: string, creatorName?: string) => Promise<void>;
-  joinRoom: (roomId: string) => Promise<void>;
+  joinRoom: (roomId: string, userName?: string) => Promise<void>;
   leaveRoom: () => void;
   navigateTo: (path: string) => void;
   currentPath: string;
@@ -94,12 +94,23 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const { currentPath, navigate, roomId: urlRoomId } = useRouter();
 
   const [currentUser, setCurrentUser] = useState<User>(() => {
-    const savedName = localStorage.getItem('studyroom_user_name');
-    let savedId = localStorage.getItem('studyroom_user_id');
+    let savedId = '';
+    try {
+      savedId = sessionStorage.getItem('studyroom_user_id') || '';
+    } catch {}
+
     if (!savedId) {
-      savedId = defaultUser.id;
-      localStorage.setItem('studyroom_user_id', savedId);
+      savedId = `user-${Math.floor(1000 + Math.random() * 9000)}`;
+      try {
+        sessionStorage.setItem('studyroom_user_id', savedId);
+      } catch {}
     }
+
+    let savedName = '';
+    try {
+      savedName = sessionStorage.getItem('studyroom_user_name') || '';
+    } catch {}
+
     return {
       ...defaultUser,
       id: savedId,
@@ -153,6 +164,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const voiceStateRef = useRef<VoiceState>(voiceState);
   const [liveKitDebugInfo, setLiveKitDebugInfo] = useState<LiveKitDebugInfo | null>(null);
   const voiceMuteHandlerRef = useRef<((shouldMute: boolean) => Promise<void>) | null>(null);
+  const previewMediaStreamRef = useRef<MediaStream | null>(null);
+  const previewMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const previewAudioContextRef = useRef<AudioContext | null>(null);
 
   const setVoiceMuteHandler = useCallback((handler: ((shouldMute: boolean) => Promise<void>) | null) => {
     voiceMuteHandlerRef.current = handler;
@@ -408,6 +422,18 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
     });
 
+    const unsubVoiceAudio = chatService.onVoiceAudioChunk((data) => {
+      if (data.userId === currentUser.id) return;
+      try {
+        const audioSrc = `data:${data.mimeType};base64,${data.chunk}`;
+        const audio = new Audio(audioSrc);
+        audio.volume = 1.0;
+        audio.play().catch(() => {});
+      } catch (err) {
+        console.warn('[Audio Play Error]', err);
+      }
+    });
+
     return () => {
       unsubInit();
       unsubNewMsg();
@@ -421,6 +447,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubStatus();
       unsubError();
       unsubVoiceState();
+      unsubVoiceAudio();
     };
   }, [currentUser.id, mapMembersToUsers, showToast]);
 
@@ -465,9 +492,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         setIsLoadingRoom(false);
 
-        // Check if user has a name registered
-        const savedUserName = localStorage.getItem('studyroom_user_name') || currentUser.name;
-        if (!savedUserName || !savedUserName.trim()) {
+        // Every time a user enters a class without having entered their name in this tab, prompt for their name!
+        if (!currentUser.name || !currentUser.name.trim()) {
           setPendingRoomId(roomData.id);
           setModalType('name-entry');
           return;
@@ -475,8 +501,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         const effectiveUser: User = {
           ...currentUser,
-          name: savedUserName.trim(),
-          avatar: savedUserName.trim().charAt(0).toUpperCase(),
+          name: currentUser.name.trim(),
+          avatar: currentUser.name.trim().charAt(0).toUpperCase(),
         };
 
         const targetRoomModel: Room = {
@@ -529,7 +555,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       avatar: trimmed.charAt(0).toUpperCase(),
     };
     setCurrentUser(updatedUser);
-    localStorage.setItem('studyroom_user_name', trimmed);
+    try {
+      sessionStorage.setItem('studyroom_user_name', trimmed);
+    } catch {}
 
     if (pendingRoomCreation) {
       const { roomName, category } = pendingRoomCreation;
@@ -598,7 +626,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       avatar: trimmedCreator.charAt(0).toUpperCase(),
     };
     setCurrentUser(updatedUser);
-    localStorage.setItem('studyroom_user_name', trimmedCreator);
+    try {
+      sessionStorage.setItem('studyroom_user_name', trimmedCreator);
+    } catch {}
 
     setIsLoadingRoom(true);
     setRoomError(null);
@@ -649,11 +679,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  const joinRoom = async (roomIdInput: string) => {
+  const joinRoom = async (roomIdInput: string, userNameInput?: string) => {
     const cleanId = cleanRoomId(roomIdInput) || roomIdInput.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
     if (!cleanId) {
-      setRoomError('لطفاً کد یا لینک اتاق را وارد کنید');
-      showToast('لطفاً کد یا لینک اتاق را وارد کنید', 'error');
+      setRoomError('لطفاً کد یا لینک کلاس را وارد کنید');
+      showToast('لطفاً کد یا لینک کلاس را وارد کنید', 'error');
       return;
     }
 
@@ -665,44 +695,55 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setIsLoadingRoom(false);
 
       if (!roomData) {
-        setRoomError('این اتاق پیدا نشد یا لینک آن منقضی شده است.');
-        showToast('این اتاق پیدا نشد یا لینک آن منقضی شده است.', 'error');
+        setRoomError('این کلاس پیدا نشد یا لینک آن منقضی شده است.');
+        showToast('این کلاس پیدا نشد یا لینک آن منقضی شده است.', 'error');
         return;
       }
+
+      const effectiveName = userNameInput?.trim() || '';
+      if (!effectiveName) {
+        setPendingRoomId(roomData.id);
+        setModalType('name-entry');
+        return;
+      }
+
+      const updatedUser: User = {
+        ...currentUser,
+        name: effectiveName,
+        avatar: effectiveName.charAt(0).toUpperCase(),
+      };
+      setCurrentUser(updatedUser);
+      try {
+        sessionStorage.setItem('studyroom_user_name', effectiveName);
+      } catch {}
 
       setModalType('none');
       navigate(`/room/${roomData.id}`);
 
-      const savedUserName = localStorage.getItem('studyroom_user_name') || currentUser.name;
-      if (!savedUserName || !savedUserName.trim()) {
-        setPendingRoomId(roomData.id);
-        setModalType('name-entry');
-      } else {
-        const targetRoomModel: Room = {
-          id: roomData.id,
-          name: roomData.name,
-          category: roomData.category || 'عمومی',
-          createdAt: roomData.createdAt,
-          hostName: roomData.ownerName,
-          membersCount: roomData.members?.length || 1,
-        };
+      const targetRoomModel: Room = {
+        id: roomData.id,
+        name: roomData.name,
+        category: roomData.category || 'عمومی',
+        createdAt: roomData.createdAt,
+        hostName: roomData.ownerName,
+        membersCount: roomData.members?.length || 1,
+      };
 
-        setActiveRoom(targetRoomModel);
-        if (roomData.members) {
-          setMembers(mapMembersToUsers(roomData.members));
-        }
-
-        setIsLoadingMessages(true);
-        chatService.connectToRoom(roomData.id, {
-          id: currentUser.id,
-          name: savedUserName.trim(),
-          avatarBg: currentUser.avatarBg,
-        });
-        showToast(`ورود به اتاق «${roomData.name}» انجام شد.`);
+      setActiveRoom(targetRoomModel);
+      if (roomData.members) {
+        setMembers(mapMembersToUsers(roomData.members));
       }
+
+      setIsLoadingMessages(true);
+      chatService.connectToRoom(roomData.id, {
+        id: updatedUser.id,
+        name: updatedUser.name,
+        avatarBg: updatedUser.avatarBg,
+      });
+      showToast(`ورود به کلاس «${roomData.name}» انجام شد.`);
     } catch (err: unknown) {
       setIsLoadingRoom(false);
-      const msg = err instanceof Error ? err.message : 'خطا در ورود به اتاق';
+      const msg = err instanceof Error ? err.message : 'خطا در ورود به کلاس';
       setRoomError(msg);
       showToast(msg, 'error');
     }
@@ -719,6 +760,22 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setPamphlets([]);
     setIsAskingAI(false);
     setAiThinking({ isThinking: false });
+
+    if (previewMediaRecorderRef.current) {
+      try { previewMediaRecorderRef.current.stop(); } catch {}
+      previewMediaRecorderRef.current = null;
+    }
+    if (previewMediaStreamRef.current) {
+      previewMediaStreamRef.current.getTracks().forEach((t) => {
+        try { t.stop(); } catch {}
+      });
+      previewMediaStreamRef.current = null;
+    }
+    if (previewAudioContextRef.current) {
+      try { previewAudioContextRef.current.close(); } catch {}
+      previewAudioContextRef.current = null;
+    }
+
     setVoiceState({
       isCallActive: false,
       isMuted: false,
@@ -883,7 +940,22 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!activeRoom) return;
 
     if (voiceState.isCallActive) {
-      // Clean up LiveKit Voice Session
+      // Clean up Preview Audio & LiveKit Voice Session
+      if (previewMediaRecorderRef.current) {
+        try { previewMediaRecorderRef.current.stop(); } catch {}
+        previewMediaRecorderRef.current = null;
+      }
+      if (previewMediaStreamRef.current) {
+        previewMediaStreamRef.current.getTracks().forEach((t) => {
+          try { t.stop(); } catch {}
+        });
+        previewMediaStreamRef.current = null;
+      }
+      if (previewAudioContextRef.current) {
+        try { previewAudioContextRef.current.close(); } catch {}
+        previewAudioContextRef.current = null;
+      }
+
       setVoiceState({
         isCallActive: false,
         isMuted: false,
@@ -898,21 +970,20 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setVoiceState((prev) => ({ ...prev, isConnecting: true }));
 
       try {
-        console.log('[LiveKit] Checking microphone permission...');
+        console.log('[Voice] Checking microphone permission...');
         // 1. Proactively verify microphone permission with native prompt
+        let micStream: MediaStream;
         try {
-          const probeStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          // Stop probe stream tracks immediately so LiveKit SFU gets exclusive, clean mic control
-          probeStream.getTracks().forEach((t) => t.stop());
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         } catch (permErr: any) {
-          console.error('[LiveKit] Mic permission denied:', permErr);
+          console.error('[Voice] Mic permission denied:', permErr);
           setVoiceState((prev) => ({ ...prev, isConnecting: false }));
           showToast('دسترسی به میکروفون داده نشده است. لطفاً اجازه دسترسی به میکروفون را فعال کنید.', 'error');
           return;
         }
 
-        // 2. Request short-lived LiveKit SFU Token from backend with room isolation
-        console.log(`[LiveKit] Fetching room token for studyroom_${activeRoom.id}...`);
+        // 2. Request short-lived LiveKit SFU Token or Preview fallback from backend
+        console.log(`[Voice] Fetching room token for studyroom_${activeRoom.id}...`);
         const tokenRes = await fetch('/api/voice/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -924,20 +995,139 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
 
         if (!tokenRes.ok) {
+          micStream.getTracks().forEach((t) => t.stop());
           const errData = await tokenRes.json().catch(() => ({}));
           setVoiceState((prev) => ({ ...prev, isConnecting: false }));
-          showToast(errData.error || 'خطا در ارتباط با سرور صوتی LiveKit', 'error');
+          showToast(errData.error || 'خطا در ارتباط با سرور صوتی', 'error');
           return;
         }
 
         const data = await tokenRes.json();
-        const { serverUrl, token, roomName } = data;
+        const { serverUrl, token, roomName, isPreviewMode } = data;
 
         if (!serverUrl || !token) {
+          micStream.getTracks().forEach((t) => t.stop());
           setVoiceState((prev) => ({ ...prev, isConnecting: false }));
-          showToast('اطلاعات اتصال به سرور LiveKit ناقص است.', 'error');
+          showToast('اطلاعات اتصال به سرور صوتی ناقص است.', 'error');
           return;
         }
+
+        if (isPreviewMode) {
+          // StudyRoom Built-in Preview SFU Audio Relay (Active for instant testing in preview environment)
+          previewMediaStreamRef.current = micStream;
+
+          try {
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+              ? 'audio/webm;codecs=opus'
+              : 'audio/webm';
+
+            let isRecordingLoop = true;
+
+            const recordSlice = () => {
+              if (!previewMediaStreamRef.current) return;
+              try {
+                const rec = new MediaRecorder(micStream, { mimeType, audioBitsPerSecond: 32000 });
+                previewMediaRecorderRef.current = rec;
+
+                rec.ondataavailable = (e) => {
+                  if (e.data && e.data.size > 200 && !voiceStateRef.current.isMuted) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      const resultStr = reader.result as string;
+                      if (resultStr && resultStr.includes(',')) {
+                        const base64data = resultStr.split(',')[1];
+                        if (base64data && activeRoom) {
+                          chatService.sendVoiceAudioChunk(activeRoom.id, currentUser.id, base64data, mimeType);
+                        }
+                      }
+                    };
+                    reader.readAsDataURL(e.data);
+                  }
+                };
+
+                rec.start();
+                setTimeout(() => {
+                  if (rec.state === 'recording') {
+                    try { rec.stop(); } catch {}
+                  }
+                  if (isRecordingLoop && previewMediaStreamRef.current) {
+                    recordSlice();
+                  }
+                }, 400);
+              } catch (err) {
+                console.warn('[Slice rec err]', err);
+              }
+            };
+
+            recordSlice();
+          } catch (recErr) {
+            console.warn('[Preview Recorder Init]', recErr);
+          }
+
+          // Volume analyser for live speaking indicator
+          try {
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioCtx) {
+              const ctx = new AudioCtx();
+              previewAudioContextRef.current = ctx;
+              const src = ctx.createMediaStreamSource(micStream);
+              const analyser = ctx.createAnalyser();
+              analyser.fftSize = 256;
+              src.connect(analyser);
+
+              const checkSpeaking = () => {
+                if (!previewMediaStreamRef.current) return;
+                const dataArr = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArr);
+                let sum = 0;
+                for (let i = 0; i < dataArr.length; i++) sum += dataArr[i];
+                const avg = sum / dataArr.length;
+                const isSpeaking = avg > 18 && !voiceStateRef.current.isMuted;
+
+                setMembers((prev) =>
+                  prev.map((m) => (m.id === currentUser.id ? { ...m, isSpeaking } : m))
+                );
+                chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, voiceStateRef.current.isMuted, isSpeaking);
+
+                if (previewMediaStreamRef.current) {
+                  requestAnimationFrame(checkSpeaking);
+                }
+              };
+              requestAnimationFrame(checkSpeaking);
+            }
+          } catch {}
+
+          setVoiceState({
+            isCallActive: true,
+            isMuted: false,
+            isConnecting: false,
+            connectedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
+            activeSpeakers: [],
+            liveKitConfig: {
+              serverUrl,
+              token,
+              roomName,
+            },
+          });
+
+          updateLiveKitState({
+            connectionState: 'connected (Preview SFU Mode)',
+            roomName,
+            isConnected: true,
+            isReconnecting: false,
+            localPublished: true,
+            localMuted: false,
+            participantCount: members.filter((m) => m.isVoiceActive).length + 1,
+          });
+
+          chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
+          showToast('به تماس صوتی اتاق (حالت پیش‌نمایش زنده) متصل شدید.', 'success');
+          return;
+        }
+
+        // LiveKit Cloud SFU Mode (When Railway server keys are configured)
+        // Stop probe stream tracks so LiveKitRoom gets exclusive hardware control
+        micStream.getTracks().forEach((t) => t.stop());
 
         setVoiceState({
           isCallActive: true,
@@ -953,7 +1143,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
 
         chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
-        showToast('به تماس صوتی اتاق (LiveKit SFU) متصل شدید.', 'success');
+        showToast('به تماس صوتی اتاق (LiveKit Cloud SFU) متصل شدید.', 'success');
       } catch (err: any) {
         setVoiceState({
           isCallActive: false,
@@ -962,7 +1152,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           activeSpeakers: [],
           liveKitConfig: null,
         });
-        showToast('خطا در اتصال به تماس صوتی LiveKit: ' + (err.message || 'نامشخص'), 'error');
+        showToast('خطا در اتصال به تماس صوتی: ' + (err.message || 'نامشخص'), 'error');
       }
     }
   };
@@ -972,7 +1162,14 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const nextMuted = !voiceState.isMuted;
 
-    // Use registered LiveKit handler if available
+    // Toggle Preview media stream tracks if in Preview mode
+    if (previewMediaStreamRef.current) {
+      previewMediaStreamRef.current.getAudioTracks().forEach((t) => {
+        t.enabled = !nextMuted;
+      });
+    }
+
+    // Use registered LiveKit handler if available (LiveKit Cloud mode)
     if (voiceMuteHandlerRef.current) {
       try {
         await voiceMuteHandlerRef.current(nextMuted);

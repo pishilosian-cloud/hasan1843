@@ -131,7 +131,7 @@ export interface VoiceState {
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
 export type AppView = 'lobby' | 'room';
-export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry';
+export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry' | 'preview-test';
 
 // WebSocket Protocol Types
 export type WSClientMessage =
@@ -141,6 +141,7 @@ export type WSClientMessage =
   | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'voice-state-update'; roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }
   | { type: 'voice-signal'; roomId: string; senderId: string; targetUserId: string; signal: any }
+  | { type: 'voice-audio-chunk'; roomId: string; userId: string; chunk: string; mimeType: string }
   | { type: 'ping' };
 
 export type WSServerMessage =
@@ -177,5 +178,6 @@ export type WSServerMessage =
   | { type: 'user-left'; roomId: string; userId: string }
   | { type: 'voice-state-update'; roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }
   | { type: 'voice-signal'; roomId: string; senderId: string; targetUserId: string; signal: any }
+  | { type: 'voice-audio-chunk'; roomId: string; userId: string; chunk: string; mimeType: string }
   | { type: 'error'; message: string }
   | { type: 'pong' };

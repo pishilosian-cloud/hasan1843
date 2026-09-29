@@ -88,6 +88,16 @@ export const Lobby: React.FC = () => {
             </button>
 
             <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => openModal('preview-test')}
+              icon={<Sparkles className="w-3.5 h-3.5 text-indigo-500" />}
+              className="text-xs"
+            >
+              ابزارهای تست پریویو
+            </Button>
+
+            <Button
               variant="outline"
               size="sm"
               onClick={() => openModal('join-room')}

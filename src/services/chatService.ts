@@ -67,6 +67,7 @@ class ChatService {
   private errorListeners = new Set<ErrorHandler>();
   private voiceStateListeners = new Set<(data: { roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }) => void>();
   private voiceSignalListeners = new Set<(data: { roomId: string; senderId: string; targetUserId: string; signal: any }) => void>();
+  private voiceAudioListeners = new Set<(data: { roomId: string; userId: string; chunk: string; mimeType: string }) => void>();
 
   private updateStatus(newStatus: ConnectionStatus) {
     if (this.status !== newStatus) {
@@ -295,6 +296,13 @@ class ChatService {
           if (data.type === 'voice-state-update') {
             if (data.roomId === this.currentRoomId) {
               this.voiceStateListeners.forEach((fn) => fn(data));
+            }
+            return;
+          }
+
+          if (data.type === 'voice-audio-chunk') {
+            if (data.roomId === this.currentRoomId) {
+              this.voiceAudioListeners.forEach((fn) => fn(data));
             }
             return;
           }
@@ -801,6 +809,21 @@ class ChatService {
   public onVoiceSignal(fn: (data: { roomId: string; senderId: string; targetUserId: string; signal: any }) => void) {
     this.voiceSignalListeners.add(fn);
     return () => this.voiceSignalListeners.delete(fn);
+  }
+
+  public sendVoiceAudioChunk(roomId: string, userId: string, chunk: string, mimeType: string) {
+    this.sendWS({
+      type: 'voice-audio-chunk',
+      roomId,
+      userId,
+      chunk,
+      mimeType,
+    });
+  }
+
+  public onVoiceAudioChunk(fn: (data: { roomId: string; userId: string; chunk: string; mimeType: string }) => void) {
+    this.voiceAudioListeners.add(fn);
+    return () => this.voiceAudioListeners.delete(fn);
   }
 }
 

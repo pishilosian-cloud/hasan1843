@@ -1,28 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Modal } from '../ui/Modal';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { UserCheck, User } from 'lucide-react';
+import { User, LogIn } from 'lucide-react';
 
 export const NameEntryModal: React.FC = () => {
-  const { modalType, closeModal, setUserName, currentUser } = useStudyRoom();
-  const [name, setName] = useState(currentUser.name || '');
+  const { modalType, closeModal, setUserName } = useStudyRoom();
+  const [name, setName] = useState('');
   const [error, setError] = useState('');
 
   const isOpen = modalType === 'name-entry';
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (isOpen) {
-      setName(currentUser.name || '');
+      setName('');
       setError('');
     }
-  }, [isOpen, currentUser.name]);
+  }, [isOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError('لطفاً نام یا نام مستعار خود را وارد کنید');
+      setError('لطفاً نام یا نام مستعار خود را برای ورود به کلاس وارد کنید');
       return;
     }
     setError('');
@@ -33,13 +33,13 @@ export const NameEntryModal: React.FC = () => {
     <Modal
       isOpen={isOpen}
       onClose={closeModal}
-      title="قبل از ورود اسمت رو وارد کن"
-      subtitle="این نام برای سایر اعضای اتاق مطالعه در چت و لیست آنلاین نمایش داده خواهد شد."
+      title="ورود به کلاس — نام شما"
+      subtitle="برای ورود به این کلاس، لطفاً نام خود را وارد کنید تا هم‌کلاسی‌ها شما را بشناسند."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
           label="نام شما"
-          placeholder="مثال: علی رضایی"
+          placeholder="مثال: علی رضایی یا سارا"
           icon={<User className="w-4 h-4" />}
           value={name}
           onChange={(e) => {
@@ -51,20 +51,21 @@ export const NameEntryModal: React.FC = () => {
           required
         />
 
-        <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-          <UserCheck className="w-4 h-4 text-emerald-500 shrink-0" />
-          <span>می‌توانی نام خود را بعداً نیز تغییر دهی.</span>
-        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          این نام برای سایر هم‌کلاسی‌ها در چت و لیست آنلاین کلاس نمایش داده می‌شود.
+        </p>
 
         <div className="flex items-center justify-end gap-3 pt-2">
           <Button type="button" variant="ghost" onClick={closeModal}>
             انصراف
           </Button>
-          <Button type="submit" variant="primary" icon={<UserCheck className="w-4 h-4" />}>
-            ورود به اتاق
+          <Button type="submit" variant="primary" icon={<LogIn className="w-4 h-4" />}>
+            ورود به کلاس
           </Button>
         </div>
       </form>
     </Modal>
   );
 };
+
+export default NameEntryModal;

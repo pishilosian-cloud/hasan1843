@@ -3,14 +3,26 @@ import { Modal } from '../ui/Modal';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { LogIn, KeyRound } from 'lucide-react';
+import { LogIn, KeyRound, User } from 'lucide-react';
 
 export const JoinRoomModal: React.FC = () => {
   const { modalType, closeModal, joinRoom, roomError, clearRoomError, isLoadingRoom } = useStudyRoom();
   const [roomId, setRoomId] = useState('');
+  const [userName, setUserName] = useState('');
   const [localError, setLocalError] = useState('');
+  const [nameError, setNameError] = useState('');
 
   const isOpen = modalType === 'join-room';
+
+  // Always reset fields when opening modal: every account must enter their name and room code!
+  useEffect(() => {
+    if (isOpen) {
+      setRoomId('');
+      setUserName('');
+      setLocalError('');
+      setNameError('');
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (roomError) {
@@ -21,18 +33,32 @@ export const JoinRoomModal: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanId = roomId.trim();
+    const cleanName = userName.trim();
+
+    let hasError = false;
     if (!cleanId) {
-      setLocalError('لطفاً کد یا لینک اتاق را وارد کنید');
-      return;
+      setLocalError('لطفاً کد یا لینک کلاس را وارد کنید');
+      hasError = true;
     }
+
+    if (!cleanName) {
+      setNameError('لطفاً نام خود را برای ورود به کلاس وارد کنید');
+      hasError = true;
+    }
+
+    if (hasError) return;
+
     setLocalError('');
+    setNameError('');
     clearRoomError();
-    joinRoom(cleanId);
+    joinRoom(cleanId, cleanName);
   };
 
   const handleClose = () => {
     setRoomId('');
+    setUserName('');
     setLocalError('');
+    setNameError('');
     clearRoomError();
     closeModal();
   };
@@ -41,12 +67,12 @@ export const JoinRoomModal: React.FC = () => {
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
-      title="ورود به اتاق با کد"
-      subtitle="کد یکتا یا شناسه اتاقی که دوستت برایت فرستاده را وارد کن."
+      title="ورود به کلاس"
+      subtitle="کد کلاس و نام خود را برای ورود وارد کنید."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
-          label="کد اتاق"
+          label="کد کلاس"
           placeholder="مثال: ABC123 یا MATH101"
           icon={<KeyRound className="w-4 h-4" />}
           value={roomId}
@@ -60,8 +86,21 @@ export const JoinRoomModal: React.FC = () => {
           required
         />
 
+        <Input
+          label="نام شما"
+          placeholder="مثال: علی رضایی یا سارا"
+          icon={<User className="w-4 h-4" />}
+          value={userName}
+          onChange={(e) => {
+            setUserName(e.target.value);
+            if (nameError) setNameError('');
+          }}
+          error={nameError}
+          required
+        />
+
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          کد اتاق معمولاً ۶ کاراکتر (مانند ABC123) است.
+          این نام برای سایر هم‌کلاسی‌ها در لیست آنلاین و چت کلاس نمایش داده می‌شود.
         </p>
 
         <div className="flex items-center justify-end gap-3 pt-2">
@@ -74,10 +113,12 @@ export const JoinRoomModal: React.FC = () => {
             isLoading={isLoadingRoom}
             icon={<LogIn className="w-4 h-4" />}
           >
-            ورود به اتاق
+            ورود به کلاس
           </Button>
         </div>
       </form>
     </Modal>
   );
 };
+
+export default JoinRoomModal;

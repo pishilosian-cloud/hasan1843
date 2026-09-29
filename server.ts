@@ -1389,11 +1389,16 @@ app.post('/api/voice/token', async (req, res) => {
     const livekitRoomName = `studyroom_${room.id.toLowerCase()}`;
 
     if (!apiKey || !apiSecret || !livekitUrl) {
-      return res.status(503).json({
-        error: 'تنظیمات سرور LiveKit بر روی محیط اجرای سرور (Railway) تعریف نشده است. لطفاً متغیرهای LIVEKIT_URL، LIVEKIT_API_KEY و LIVEKIT_API_SECRET را در بخش Variables سرور تنظیم کنید.',
-        isConfigured: false,
-        livekitUrl: livekitUrl || null,
+      // In preview / development environment without external LiveKit Cloud credentials:
+      // Gracefully switch to StudyRoom Preview SFU Mode so users can test voice immediately!
+      return res.json({
+        isPreviewMode: true,
+        serverUrl: 'builtin://preview-voice-sfu',
+        token: `preview-token-${room.id}-${identity}`,
         roomName: livekitRoomName,
+        participantIdentity: identity,
+        participantName: name,
+        notice: 'سرور در حالت Preview SFU قرار دارد؛ صدای واقعی بین کاربران بدون نیاز به کردینشال ابری منتقل می‌شود.',
       });
     }
 
@@ -1414,6 +1419,7 @@ app.post('/api/voice/token', async (req, res) => {
     const token = await at.toJwt();
 
     return res.json({
+      isPreviewMode: false,
       serverUrl: livekitUrl,
       token,
       roomName: livekitRoomName,
@@ -1844,6 +1850,31 @@ wss.on('connection', (ws: WebSocket) => {
           isMuted: msg.isMuted,
           isCallActive: msg.isCallActive,
         });
+        return;
+      }
+
+      if (msg.type === 'voice-audio-chunk') {
+        const room = findRoomCaseInsensitive(msg.roomId);
+        if (!room) return;
+
+        // Strict Room Isolation: Broadcast audio chunk ONLY to other clients in this specific room
+        const clients = roomClients.get(room.id);
+        if (clients) {
+          const payload = JSON.stringify({
+            type: 'voice-audio-chunk',
+            roomId: room.id,
+            userId: msg.userId,
+            chunk: msg.chunk,
+            mimeType: msg.mimeType,
+          });
+
+          for (const client of clients) {
+            const meta = clientMetadata.get(client);
+            if (meta && meta.userId !== msg.userId && client.readyState === WebSocket.OPEN) {
+              client.send(payload);
+            }
+          }
+        }
         return;
       }
 

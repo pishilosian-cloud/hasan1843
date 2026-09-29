@@ -36,7 +36,7 @@ export const LiveKitVoiceManager: React.FC<LiveKitVoiceManagerProps> = ({ childr
   const { voiceState, toggleVoiceCall } = useStudyRoom();
   const config = voiceState.liveKitConfig;
 
-  if (!config || !voiceState.isCallActive) {
+  if (!config || !voiceState.isCallActive || config.serverUrl.startsWith('builtin://')) {
     return <>{children}</>;
   }
 

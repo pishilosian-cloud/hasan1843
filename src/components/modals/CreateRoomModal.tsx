@@ -3,35 +3,37 @@ import { Modal } from '../ui/Modal';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { Sparkles, Users, User } from 'lucide-react';
+import { Users, User, BookOpen } from 'lucide-react';
 
 export const CreateRoomModal: React.FC = () => {
-  const { modalType, closeModal, createRoom, isLoadingRoom, currentUser } = useStudyRoom();
+  const { modalType, closeModal, createRoom, isLoadingRoom } = useStudyRoom();
   const [roomName, setRoomName] = useState('');
-  const [userName, setUserName] = useState(currentUser.name || '');
-  const [category, setCategory] = useState('حسابداری و مدیریت');
+  const [userName, setUserName] = useState('');
   const [nameError, setNameError] = useState('');
   const [roomError, setRoomError] = useState('');
 
   const isOpen = modalType === 'create-room';
 
+  // Always reset fields when opening modal: every account must enter their name and class name!
   useEffect(() => {
-    if (currentUser.name && !userName) {
-      setUserName(currentUser.name);
+    if (isOpen) {
+      setRoomName('');
+      setUserName('');
+      setNameError('');
+      setRoomError('');
     }
-  }, [currentUser.name, userName]);
+  }, [isOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
     let hasError = false;
     if (!roomName.trim()) {
-      setRoomError('لطفاً نام اتاق را وارد کنید');
+      setRoomError('لطفاً نام کلاس را وارد کنید');
       hasError = true;
     }
 
-    const trimmedUser = userName.trim() || currentUser.name.trim();
-    if (!trimmedUser) {
+    if (!userName.trim()) {
       setNameError('لطفاً نام خود را وارد کنید');
       hasError = true;
     }
@@ -40,31 +42,22 @@ export const CreateRoomModal: React.FC = () => {
 
     setRoomError('');
     setNameError('');
-    createRoom(roomName.trim(), category, trimmedUser);
+    createRoom(roomName.trim(), 'عمومی', userName.trim());
   };
-
-  const categories = [
-    'حسابداری و مدیریت',
-    'ریاضی و آمار',
-    'برنامه‌نویسی و هوش مصنوعی',
-    'زبان‌های خارجی',
-    'پزشکی و زیست‌شناسی',
-    'کنکور و مدارس',
-    'سایر موضوعات',
-  ];
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={closeModal}
-      title="ساخت اتاق مطالعه"
-      subtitle="اتاق اختصاصی خود را بسازید و لینک آن را برای دوستانتان بفرستید."
+      title="ساخت کلاس جدید"
+      subtitle="فقط نام کلاس و نام خودتان کافیست (بدون نیاز به موضوع یا اطلاعات اضافی)."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Room Name Input */}
         <Input
-          label="نام اتاق مطالعه"
-          placeholder="مثال: آمادگی امتحان حسابداری"
+          label="نام کلاس"
+          placeholder="مثال: ریاضی عمومی ۱ یا ادبیات کنکور"
+          icon={<BookOpen className="w-4 h-4" />}
           value={roomName}
           onChange={(e) => {
             setRoomName(e.target.value);
@@ -77,7 +70,7 @@ export const CreateRoomModal: React.FC = () => {
 
         {/* Host Name Input */}
         <Input
-          label="نام شما (میزبان اتاق)"
+          label="نام شما (سازنده کلاس)"
           placeholder="مثال: علی رضایی"
           icon={<User className="w-4 h-4" />}
           value={userName}
@@ -89,29 +82,8 @@ export const CreateRoomModal: React.FC = () => {
           required
         />
 
-        {/* Category Select */}
-        <div className="text-right">
-          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-            موضوع یا حوزه مطالعه
-          </label>
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="bg-slate-50 dark:bg-slate-800/50 p-3.5 rounded-xl border border-slate-200/60 dark:border-slate-800 flex items-start gap-3">
-          <Sparkles className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
-          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-            پس از ساخت، یک Room ID یکتا برای اتاق ایجاد شده و لینک دعوت اختصاصی دریافت خواهید کرد.
-          </p>
+        <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
+          💡 برای ساخت کلاس نیازی به انتخاب موضوع نیست؛ فقط نام کلاس را بنویسید تا کلاس ساخته شود و کد ورود اختصاصی در اختیارتان قرار گیرد.
         </div>
 
         <div className="flex items-center justify-end gap-3 pt-2">
@@ -124,10 +96,12 @@ export const CreateRoomModal: React.FC = () => {
             isLoading={isLoadingRoom}
             icon={<Users className="w-4 h-4" />}
           >
-            ساخت و ورود به اتاق
+            ساخت و ورود به کلاس
           </Button>
         </div>
       </form>
     </Modal>
   );
 };
+
+export default CreateRoomModal;

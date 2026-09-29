@@ -28,28 +28,39 @@ export const Lobby: React.FC = () => {
     id: string;
     name: string;
     category?: string;
-    members: number;
-    activeCall?: boolean;
-  }>>([
-    { id: 'ABC123', name: 'آمادگی امتحان حسابداری', category: 'حسابداری و مدیریت', members: 2, activeCall: false },
-    { id: 'MATH101', name: 'آمادگی کنکور - ریاضی تجربی', category: 'ریاضیات', members: 1, activeCall: true },
-  ]);
+    membersCount: number;
+    onlineCount: number;
+    ownerName?: string;
+  }>>([]);
+  const [isLoadingRooms, setIsLoadingRooms] = useState<boolean>(true);
 
-  useEffect(() => {
-    roomService.getRooms().then((rooms) => {
-      if (rooms && rooms.length > 0) {
+  const fetchRooms = React.useCallback(async () => {
+    try {
+      const rooms = await roomService.getRooms();
+      if (rooms && Array.isArray(rooms)) {
         setPublicRooms(
-          rooms.map((r) => ({
+          rooms.map((r: any) => ({
             id: r.id,
             name: r.name,
             category: r.category || 'عمومی',
-            members: r.members?.length || 1,
-            activeCall: false,
+            membersCount: Array.isArray(r.members) ? r.members.length : (r.membersCount || 1),
+            onlineCount: Array.isArray(r.members) ? r.members.filter((m: any) => m.isOnline).length : (r.onlineCount || 0),
+            ownerName: r.ownerName || r.hostName || 'سازنده کلاس',
           }))
         );
       }
-    });
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingRooms(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchRooms();
+    const interval = setInterval(fetchRooms, 3000); // Live poll created rooms every 3 seconds
+    return () => clearInterval(interval);
+  }, [fetchRooms]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200" dir="rtl">
@@ -209,49 +220,97 @@ export const Lobby: React.FC = () => {
           </div>
         </section>
 
-        {/* Active Demo Rooms Section */}
+        {/* Active Real Rooms Section */}
         <section id="active-rooms" className="w-full py-8 border-t border-slate-200/60 dark:border-slate-800">
           <div className="flex items-center justify-between mb-6">
             <div className="text-right">
               <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-indigo-500" />
-                اتاق‌های مطالعه آنلاین
+                <span>اتاق‌های مطالعه آنلاین فعال</span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                می‌توانی مستقیم وارد یکی از این اتاق‌ها شوی و چت زنده را تست کنی:
+                کلاس‌ها و اتاق‌های فعال در پلتفرم (به‌صورت زنده و به‌روز):
               </p>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openModal('create-room')}
+              icon={<PlusCircle className="w-3.5 h-3.5" />}
+              className="text-xs"
+            >
+              ساخت کلاس جدید
+            </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-right">
-            {publicRooms.map((room) => (
-              <Card key={room.id} hoverable onClick={() => joinRoom(room.id)}>
-                <div className="flex items-start justify-between mb-3">
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-                    {room.category}
-                  </span>
-                  <span className="text-xs font-mono font-bold text-slate-500 dark:text-slate-400">
-                    کد: {room.id}
-                  </span>
-                </div>
+          {isLoadingRooms && publicRooms.length === 0 ? (
+            <div className="text-center py-12 text-slate-400 text-xs animate-pulse">
+              در حال دریافت لیست اتاق‌های آنلاین...
+            </div>
+          ) : publicRooms.length === 0 ? (
+            <div className="text-center py-12 bg-slate-100/60 dark:bg-slate-900/60 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-6">
+              <p className="text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">هنوز هیچ اتاقی ساخته نشده است.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">اولین کلاس یا اتاق مطالعه را خودتان بپازید!</p>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => openModal('create-room')}
+                icon={<PlusCircle className="w-4 h-4" />}
+              >
+                ساخت اولین اتاق مطالعه
+              </Button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-right">
+              {publicRooms.map((room) => (
+                <Card
+                  key={room.id}
+                  hoverable
+                  onClick={() => joinRoom(room.id)}
+                  className="flex flex-col justify-between cursor-pointer group hover:border-indigo-500/50 transition-all shadow-xs"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900">
+                        {room.category}
+                      </span>
+                      <span className="text-xs font-mono font-extrabold text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                        کد: {room.id}
+                      </span>
+                    </div>
 
-                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-3">
-                  {room.name}
-                </h3>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 mb-1 line-clamp-1">
+                      {room.name}
+                    </h3>
 
-                <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500">
-                  <div className="flex items-center gap-1">
-                    <Users className="w-3.5 h-3.5" />
-                    <span>{room.members} عضو</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3">
+                      سازنده: {room.ownerName || 'کاربر'}
+                    </p>
                   </div>
-                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold flex items-center gap-1 group">
-                    ورود به اتاق
-                    <ArrowLeft className="w-3.5 h-3.5 transition-transform group-hover:-translate-x-1" />
-                  </span>
-                </div>
-              </Card>
-            ))}
-          </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        <Users className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{room.membersCount} عضو</span>
+                      </div>
+                      {room.onlineCount > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-md">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          <span>{room.onlineCount} آنلاین</span>
+                        </span>
+                      )}
+                    </div>
+
+                    <span className="text-indigo-600 dark:text-indigo-400 font-bold flex items-center gap-1 group-hover:translate-x-[-2px] transition-transform">
+                      <span>ورود</span>
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                    </span>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
         </section>
       </main>
 

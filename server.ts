@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { AccessToken } from 'livekit-server-sdk';
 import type {
   RoomData,
@@ -1704,8 +1704,8 @@ ${modeInstruction}
 
   // Get previous room AI conversation history for multi-turn capability
   const history = roomAIMessages.get(roomId) || [];
-  // Keep last 12 turns (6 questions + 6 answers) to prevent context bloat while providing rich history
-  const recentHistory = history.slice(-12);
+  // Keep last 24 turns (12 questions + 12 answers) to provide an incredibly deep and rich conversation memory
+  const recentHistory = history.slice(-24);
 
   for (const h of recentHistory) {
     // Skip if it matches the current question (user's latest question should be pushed at the end)
@@ -1764,7 +1764,7 @@ ${modeInstruction}
             systemInstruction,
             temperature: mode === 'complex' ? 0.4 : 0.7,
             thinkingConfig: modelName.includes('3.8')
-              ? { thinkingLevel: ThinkingLevel.HIGH } // Use standard HIGH thinking level for Gemini 3.8 models
+              ? { thinkingBudget: 4096 } // Full 4096 thinking tokens for deep extended reasoning
               : undefined,
           },
         });

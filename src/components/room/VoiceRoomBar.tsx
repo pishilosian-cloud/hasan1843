@@ -39,24 +39,24 @@ export function VoiceRoomBar(): React.ReactElement | null {
   if (!voiceState || (!voiceState.isCallActive && !voiceState.isConnecting)) {
     return (
       <div
-        className="w-full bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs"
+        className="w-full bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 py-2.5 sm:py-3 flex flex-row items-center justify-between gap-2 text-xs shrink-0"
         dir="rtl"
       >
-        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300 font-medium">
-          <Radio className="w-4 h-4 text-indigo-500 animate-pulse" />
-          <span className="font-extrabold text-[13px]">🎙️ تماس صوتی کلاس</span>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400">
-            آماده اتصال صوتی (زنده و دوطرفه)
+        <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium min-w-0">
+          <Radio className="w-4 h-4 text-indigo-500 animate-pulse shrink-0" />
+          <span className="font-extrabold text-xs sm:text-[13px] truncate">🎙️ تماس صوتی</span>
+          <span className="hidden sm:inline text-[11px] text-slate-500 dark:text-slate-400">
+            (زنده و دوطرفه)
           </span>
         </div>
-        <div className="sm:mr-auto flex items-center gap-2">
+        <div className="mr-auto flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={toggleVoiceCall}
-            className="flex items-center justify-center gap-1.5 py-1.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all shadow-xs cursor-pointer active:scale-95 text-center"
+            className="flex items-center justify-center gap-1.5 py-1.5 px-3 sm:px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all shadow-xs cursor-pointer active:scale-95 text-center text-xs"
           >
             <Phone className="w-3.5 h-3.5" />
-            <span>ورود به تماس صوتی</span>
+            <span>اتصال صوتی</span>
           </button>
         </div>
       </div>
@@ -68,11 +68,11 @@ export function VoiceRoomBar(): React.ReactElement | null {
 
   return (
     <div
-      className="w-full bg-emerald-500/10 dark:bg-emerald-950/20 border-b border-emerald-500/20 px-4 py-2.5 flex flex-col gap-2 text-xs transition-all shrink-0"
+      className="w-full bg-emerald-500/10 dark:bg-emerald-950/20 border-b border-emerald-500/20 px-3 sm:px-4 py-2 flex flex-col gap-2 text-xs transition-all shrink-0"
       dir="rtl"
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
+        <div className="flex items-center gap-2 min-w-0">
           {voiceState.isConnecting ? (
             <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold animate-pulse">
               <Volume2 className="w-4 h-4 animate-spin text-amber-500" />

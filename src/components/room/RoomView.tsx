@@ -79,7 +79,7 @@ export const RoomView: React.FC = () => {
 
   return (
     <LiveKitVoiceManager>
-      <div className="h-screen w-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
+      <div className="h-[100dvh] max-h-[100dvh] w-screen max-w-full flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden" dir="rtl">
       {/* Room Header */}
       <RoomHeader
         onOpenSidebarDrawer={() => setIsSidebarOpen(true)}

@@ -39,8 +39,8 @@ export const Drawer: React.FC<DrawerProps> = ({
         onClick={onClose}
       />
 
-      <div className={`fixed inset-y-0 ${side === 'right' ? 'right-0' : 'left-0'} max-w-full flex ${side === 'right' ? 'pl-8' : 'pr-8'}`}>
-        <div className="w-screen max-w-md bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-xl flex flex-col">
+      <div className={`fixed inset-y-0 ${side === 'right' ? 'right-0' : 'left-0'} max-w-full flex ${side === 'right' ? 'pl-4 sm:pl-8' : 'pr-4 sm:pr-8'} h-[100dvh]`}>
+        <div className="w-screen max-w-[85vw] sm:max-w-md bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-xl flex flex-col h-full pb-safe">
           {/* Drawer Header */}
           <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
             <div>

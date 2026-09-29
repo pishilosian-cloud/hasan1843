@@ -67,7 +67,7 @@ export const ChatInput: React.FC = () => {
   const isAIPrompt = /^([/@]ai|ai\/|\/هوش)\b/i.test(text.trim()) || attachedImage !== null;
 
   return (
-    <div className="w-full bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800 p-3 sm:p-4 shrink-0 transition-colors">
+    <div className="w-full bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800 p-3 sm:p-4 pb-safe shrink-0 transition-colors">
       <div className="max-w-4xl mx-auto space-y-2">
         {/* Reply Preview Bar */}
         {replyingToMessage && (

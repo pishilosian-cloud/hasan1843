@@ -1,6 +1,5 @@
 import React from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { VoiceControls } from './VoiceControls';
 import { PWAInstallButton } from '../ui/PWAInstallButton';
 import {
   Users,
@@ -48,7 +47,7 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
-                <h1 className="text-xs sm:text-base font-black text-slate-900 dark:text-slate-100 truncate max-w-[100px] xs:max-w-[130px] sm:max-w-xs">
+                <h1 className="text-xs sm:text-base font-black text-slate-900 dark:text-slate-100 truncate max-w-[120px] xs:max-w-[160px] sm:max-w-xs">
                   {activeRoom?.name || 'اتاق مطالعه'}
                 </h1>
                 {activeRoom?.id && (
@@ -70,13 +69,8 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
           </div>
         </div>
 
-        {/* Center Zone: Voice Call Controls */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-          <VoiceControls />
-        </div>
-
         {/* Right Zone: AI Drawer, Share & Actions */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Copy Link Button */}
           <button
             type="button"

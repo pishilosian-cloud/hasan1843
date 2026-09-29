@@ -50,7 +50,7 @@ export const CreateRoomModal: React.FC = () => {
       isOpen={isOpen}
       onClose={closeModal}
       title="ساخت کلاس جدید"
-      subtitle="فقط نام کلاس و نام خودتان کافیست (بدون نیاز به موضوع یا اطلاعات اضافی)."
+      subtitle="نام کلاس و نام خودتان را برای ساخت کلاس وارد کنید."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Room Name Input */}
@@ -81,10 +81,6 @@ export const CreateRoomModal: React.FC = () => {
           error={nameError}
           required
         />
-
-        <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-          💡 برای ساخت کلاس نیازی به انتخاب موضوع نیست؛ فقط نام کلاس را بنویسید تا کلاس ساخته شود و کد ورود اختصاصی در اختیارتان قرار گیرد.
-        </div>
 
         <div className="flex items-center justify-end gap-3 pt-2">
           <Button type="button" variant="ghost" onClick={closeModal}>

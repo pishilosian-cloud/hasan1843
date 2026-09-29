@@ -15,6 +15,7 @@ import {
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
+import { webrtcVoiceService } from '../services/webrtcVoiceService';
 import { showBackgroundNotification, requestNotificationPermission } from '../utils/notificationService';
 import type { LiveKitDebugInfo } from '../components/room/LiveKitVoiceManager';
 
@@ -199,9 +200,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const voiceStateRef = useRef<VoiceState>(voiceState);
   const [liveKitDebugInfo, setLiveKitDebugInfo] = useState<LiveKitDebugInfo | null>(null);
   const voiceMuteHandlerRef = useRef<((shouldMute: boolean) => Promise<void>) | null>(null);
-  const previewMediaStreamRef = useRef<MediaStream | null>(null);
-  const previewMediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const previewAudioContextRef = useRef<AudioContext | null>(null);
 
   const setVoiceMuteHandler = useCallback((handler: ((shouldMute: boolean) => Promise<void>) | null) => {
     voiceMuteHandlerRef.current = handler;
@@ -844,6 +842,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const leaveRoom = () => {
     isLeavingRef.current = true;
+    webrtcVoiceService.endCall();
     chatService.leaveRoom();
     setActiveRoom(null);
     setPendingRoomId(null);
@@ -855,21 +854,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setPamphlets([]);
     setIsAskingAI(false);
     setAiThinking({ isThinking: false });
-
-    if (previewMediaRecorderRef.current) {
-      try { previewMediaRecorderRef.current.stop(); } catch {}
-      previewMediaRecorderRef.current = null;
-    }
-    if (previewMediaStreamRef.current) {
-      previewMediaStreamRef.current.getTracks().forEach((t) => {
-        try { t.stop(); } catch {}
-      });
-      previewMediaStreamRef.current = null;
-    }
-    if (previewAudioContextRef.current) {
-      try { previewAudioContextRef.current.close(); } catch {}
-      previewAudioContextRef.current = null;
-    }
 
     setVoiceState({
       isCallActive: false,
@@ -1035,21 +1019,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!activeRoom) return;
 
     if (voiceState.isCallActive) {
-      // Clean up Preview Audio & LiveKit Voice Session
-      if (previewMediaRecorderRef.current) {
-        try { previewMediaRecorderRef.current.stop(); } catch {}
-        previewMediaRecorderRef.current = null;
-      }
-      if (previewMediaStreamRef.current) {
-        previewMediaStreamRef.current.getTracks().forEach((t) => {
-          try { t.stop(); } catch {}
-        });
-        previewMediaStreamRef.current = null;
-      }
-      if (previewAudioContextRef.current) {
-        try { previewAudioContextRef.current.close(); } catch {}
-        previewAudioContextRef.current = null;
-      }
+      webrtcVoiceService.endCall();
 
       setVoiceState({
         isCallActive: false,
@@ -1065,171 +1035,29 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setVoiceState((prev) => ({ ...prev, isConnecting: true }));
 
       try {
-        console.log('[Voice] Checking microphone permission...');
-        // 1. Proactively verify microphone permission with native prompt
-        let micStream: MediaStream;
-        try {
-          micStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-            video: false,
-          });
-        } catch (permErr: any) {
-          console.error('[Voice] Mic permission denied:', permErr);
-          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
-          showToast('دسترسی به میکروفون داده نشده است. لطفاً اجازه دسترسی به میکروفون را فعال کنید.', 'error');
-          return;
-        }
+        const existingVoiceUserIds = members.filter((m) => m.isVoiceActive).map((m) => m.id);
 
-        // 2. Request short-lived LiveKit SFU Token or Preview fallback from backend
-        console.log(`[Voice] Fetching room token for studyroom_${activeRoom.id}...`);
-        const tokenRes = await fetch('/api/voice/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roomId: activeRoom.id,
-            participantIdentity: currentUser.id,
-            participantName: currentUser.name || 'کاربر',
-          }),
-        });
-
-        if (!tokenRes.ok) {
-          micStream.getTracks().forEach((t) => t.stop());
-          const errData = await tokenRes.json().catch(() => ({}));
-          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
-          showToast(errData.error || 'خطا در ارتباط با سرور صوتی', 'error');
-          return;
-        }
-
-        const data = await tokenRes.json();
-        const { serverUrl, token, roomName, isPreviewMode } = data;
-
-        if (!serverUrl || !token) {
-          micStream.getTracks().forEach((t) => t.stop());
-          setVoiceState((prev) => ({ ...prev, isConnecting: false }));
-          showToast('اطلاعات اتصال به سرور صوتی ناقص است.', 'error');
-          return;
-        }
-
-        if (isPreviewMode) {
-          // StudyRoom Built-in Preview SFU Audio Relay (Active for instant testing in preview environment)
-          previewMediaStreamRef.current = micStream;
-
-          try {
-            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-              ? 'audio/webm;codecs=opus'
-              : 'audio/webm';
-
-            let isRecordingLoop = true;
-
-            const recordSlice = () => {
-              if (!previewMediaStreamRef.current) return;
-              try {
-                const rec = new MediaRecorder(micStream, { mimeType, audioBitsPerSecond: 32000 });
-                previewMediaRecorderRef.current = rec;
-
-                rec.ondataavailable = (e) => {
-                  if (e.data && e.data.size > 200 && !voiceStateRef.current.isMuted) {
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                      const resultStr = reader.result as string;
-                      if (resultStr && resultStr.includes(',')) {
-                        const base64data = resultStr.split(',')[1];
-                        if (base64data && activeRoom) {
-                          chatService.sendVoiceAudioChunk(activeRoom.id, currentUser.id, base64data, mimeType);
-                        }
-                      }
-                    };
-                    reader.readAsDataURL(e.data);
-                  }
-                };
-
-                rec.start();
-                setTimeout(() => {
-                  if (rec.state === 'recording') {
-                    try { rec.stop(); } catch {}
-                  }
-                  if (isRecordingLoop && previewMediaStreamRef.current) {
-                    recordSlice();
-                  }
-                }, 400);
-              } catch (err) {
-                console.warn('[Slice rec err]', err);
-              }
-            };
-
-            recordSlice();
-          } catch (recErr) {
-            console.warn('[Preview Recorder Init]', recErr);
+        await webrtcVoiceService.startCall(
+          activeRoom.id,
+          currentUser.id,
+          existingVoiceUserIds,
+          (speakerId, isSpeaking) => {
+            setMembers((prev) =>
+              prev.map((m) => (m.id === speakerId ? { ...m, isSpeaking } : m))
+            );
+          },
+          (isConnected, peerCount) => {
+            updateLiveKitState({
+              connectionState: isConnected ? 'متصل (WebRTC Real-Time زنده)' : 'در حال اتصال...',
+              roomName: `studyroom_${activeRoom.id}`,
+              isConnected,
+              isReconnecting: false,
+              localPublished: true,
+              localMuted: voiceState.isMuted,
+              participantCount: peerCount + 1,
+            });
           }
-
-          // Volume analyser for live speaking indicator
-          try {
-            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-            if (AudioCtx) {
-              const ctx = new AudioCtx();
-              previewAudioContextRef.current = ctx;
-              const src = ctx.createMediaStreamSource(micStream);
-              const analyser = ctx.createAnalyser();
-              analyser.fftSize = 256;
-              src.connect(analyser);
-
-              const checkSpeaking = () => {
-                if (!previewMediaStreamRef.current) return;
-                const dataArr = new Uint8Array(analyser.frequencyBinCount);
-                analyser.getByteFrequencyData(dataArr);
-                let sum = 0;
-                for (let i = 0; i < dataArr.length; i++) sum += dataArr[i];
-                const avg = sum / dataArr.length;
-                const isSpeaking = avg > 18 && !voiceStateRef.current.isMuted;
-
-                setMembers((prev) =>
-                  prev.map((m) => (m.id === currentUser.id ? { ...m, isSpeaking } : m))
-                );
-                chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, voiceStateRef.current.isMuted, isSpeaking);
-
-                if (previewMediaStreamRef.current) {
-                  requestAnimationFrame(checkSpeaking);
-                }
-              };
-              requestAnimationFrame(checkSpeaking);
-            }
-          } catch {}
-
-          setVoiceState({
-            isCallActive: true,
-            isMuted: false,
-            isConnecting: false,
-            connectedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
-            activeSpeakers: [],
-            liveKitConfig: {
-              serverUrl,
-              token,
-              roomName,
-            },
-          });
-
-          updateLiveKitState({
-            connectionState: 'متصل (ارتباط مستقیم پورت ۴۴۳ / بدون فیلترشکن)',
-            roomName,
-            isConnected: true,
-            isReconnecting: false,
-            localPublished: true,
-            localMuted: false,
-            participantCount: members.filter((m) => m.isVoiceActive).length + 1,
-          });
-
-          chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
-          showToast('به تماس صوتی متصل شدید (حالت مستقیم و بدون نیاز به فیلترشکن).', 'success');
-          return;
-        }
-
-        // LiveKit Cloud SFU Mode (When Railway server keys are configured)
-        // Stop probe stream tracks so LiveKitRoom gets exclusive hardware control
-        micStream.getTracks().forEach((t) => t.stop());
+        );
 
         setVoiceState({
           isCallActive: true,
@@ -1238,14 +1066,23 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           connectedAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
           activeSpeakers: [],
           liveKitConfig: {
-            serverUrl,
-            token,
-            roomName,
+            serverUrl: 'builtin://webrtc-direct-p2p',
+            token: `token-${activeRoom.id}`,
+            roomName: `studyroom_${activeRoom.id}`,
           },
         });
 
-        chatService.sendVoiceStateUpdate(activeRoom.id, currentUser.id, true, false, false);
-        showToast('به تماس صوتی اتاق (LiveKit Cloud SFU) متصل شدید.', 'success');
+        updateLiveKitState({
+          connectionState: 'متصل (WebRTC Real-Time زنده)',
+          roomName: `studyroom_${activeRoom.id}`,
+          isConnected: true,
+          isReconnecting: false,
+          localPublished: true,
+          localMuted: false,
+          participantCount: members.filter((m) => m.isVoiceActive).length + 1,
+        });
+
+        showToast('به تماس صوتی زنده و همزمان متصل شدید.', 'success');
       } catch (err: any) {
         setVoiceState({
           isCallActive: false,
@@ -1254,7 +1091,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           activeSpeakers: [],
           liveKitConfig: null,
         });
-        showToast('خطا در اتصال به تماس صوتی: ' + (err.message || 'نامشخص'), 'error');
+        showToast('دسترسی به میکروفون داده نشد یا خطایی در شروع تماس صوتی رخ داد.', 'error');
       }
     }
   };
@@ -1263,22 +1100,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!activeRoom || !voiceState.isCallActive) return;
 
     const nextMuted = !voiceState.isMuted;
-
-    // Toggle Preview media stream tracks if in Preview mode
-    if (previewMediaStreamRef.current) {
-      previewMediaStreamRef.current.getAudioTracks().forEach((t) => {
-        t.enabled = !nextMuted;
-      });
-    }
-
-    // Use registered LiveKit handler if available (LiveKit Cloud mode)
-    if (voiceMuteHandlerRef.current) {
-      try {
-        await voiceMuteHandlerRef.current(nextMuted);
-      } catch (err) {
-        console.error('[LiveKit] Error toggling mic:', err);
-      }
-    }
+    webrtcVoiceService.setMuted(nextMuted);
 
     setVoiceState((prev) => ({
       ...prev,

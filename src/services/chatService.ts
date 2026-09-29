@@ -9,6 +9,7 @@ import {
   AIThinkingState,
   WSClientMessage,
   WSServerMessage,
+  ReplyToInfo,
 } from '../types';
 
 type MessageHandler = (message: ChatMessage) => void;
@@ -389,7 +390,7 @@ class ChatService {
     }
   }
 
-  public sendMessage(content: string, mode: AIMode = 'simple'): boolean {
+  public sendMessage(content: string, mode: AIMode = 'simple', replyTo?: ReplyToInfo): boolean {
     const raw = content.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
@@ -399,6 +400,7 @@ class ChatService {
       senderId: this.currentUser.id,
       senderName: this.currentUser.name,
       senderAvatarBg: this.currentUser.avatarBg,
+      replyTo,
     };
 
     let sentViaWs = false;
@@ -435,7 +437,7 @@ class ChatService {
    * Secure AI Endpoint: POST /api/ai/chat
    * Supports both simple and complex (deep reasoning) modes
    */
-  public async askAI(question: string, mode: AIMode = 'simple'): Promise<boolean> {
+  public async askAI(question: string, mode: AIMode = 'simple', replyTo?: ReplyToInfo): Promise<boolean> {
     const raw = question.trim();
     if (!raw || !this.currentRoomId || !this.currentUser) return false;
 
@@ -454,6 +456,7 @@ class ChatService {
           mode,
           userId: user.id,
           userName: user.name,
+          replyTo,
         }),
       });
 
@@ -484,7 +487,8 @@ class ChatService {
     question: string,
     imageData: string,
     mimeType: string,
-    mode: AIMode = 'simple'
+    mode: AIMode = 'simple',
+    replyTo?: ReplyToInfo
   ): Promise<boolean> {
     const raw = question.trim();
     if (!this.currentRoomId || !this.currentUser || !imageData) return false;
@@ -506,6 +510,7 @@ class ChatService {
           mode,
           userId: user.id,
           userName: user.name,
+          replyTo,
         }),
       });
 

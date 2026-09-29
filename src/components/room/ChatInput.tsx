@@ -1,9 +1,18 @@
 import React, { useState, useRef } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { Send, Bot, Sparkles, Camera, X, Loader2 } from 'lucide-react';
+import { Send, Bot, Sparkles, Camera, X, Loader2, Reply } from 'lucide-react';
 
 export const ChatInput: React.FC = () => {
-  const { sendMessage, sendAIVision, connectionStatus, aiMode, isAskingAI, aiThinking } = useStudyRoom();
+  const {
+    sendMessage,
+    sendAIVision,
+    connectionStatus,
+    aiMode,
+    isAskingAI,
+    aiThinking,
+    replyingToMessage,
+    setReplyingToMessage,
+  } = useStudyRoom();
   const [text, setText] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ file: File; previewUrl: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,6 +69,32 @@ export const ChatInput: React.FC = () => {
   return (
     <div className="w-full bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800 p-3 sm:p-4 shrink-0 transition-colors">
       <div className="max-w-4xl mx-auto space-y-2">
+        {/* Reply Preview Bar */}
+        {replyingToMessage && (
+          <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/80 dark:border-indigo-800/80 flex items-center justify-between animate-in slide-in-from-bottom-2 duration-150">
+            <div className="flex items-center gap-2 min-w-0 pr-1">
+              <div className="w-1 h-7 bg-indigo-600 rounded-full shrink-0" />
+              <Reply className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 rotate-180" />
+              <div className="flex flex-col min-w-0 text-right">
+                <span className="text-xs font-extrabold text-indigo-900 dark:text-indigo-200">
+                  در حال پاسخ به {replyingToMessage.senderName}
+                </span>
+                <span className="text-[11px] text-slate-600 dark:text-slate-400 truncate max-w-[280px] sm:max-w-[450px]">
+                  {replyingToMessage.content}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingToMessage(null)}
+              className="p-1 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+              title="انصراف از پاسخ"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Live Thinking Status Banner */}
         {(isAskingAI || Boolean(aiThinking?.isThinking)) && (
           <div className="flex items-center gap-2 text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/60 border border-purple-200/80 dark:border-purple-800 px-3 py-1.5 rounded-xl animate-pulse">

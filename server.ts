@@ -18,6 +18,8 @@ import type {
   AIMode,
   WSClientMessage,
   WSServerMessage,
+  AIThinkingState,
+  ReplyToInfo,
 } from './src/types';
 import {
   pamphletProcessor,
@@ -89,6 +91,7 @@ const roomMessages = new Map<string, ChatMessage[]>();
 const roomAIMessages = new Map<string, AIMessage[]>();
 const roomPamphlets = new Map<string, PamphletFile[]>();
 const roomClients = new Map<string, Set<WebSocket>>();
+const roomAIThinking = new Map<string, AIThinkingState>();
 const clientMetadata = new WeakMap<WebSocket, { roomId?: string; userId?: string; userName?: string }>();
 
 // In-Memory Rate Limiter for AI endpoint (15 requests per 60 seconds per IP/User)
@@ -477,6 +480,7 @@ app.post('/api/rooms/:roomId/join', (req, res) => {
     members: room.members,
     aiMessages,
     pamphlets,
+    aiThinking: roomAIThinking.get(room.id) || { isThinking: false },
   });
 });
 
@@ -499,6 +503,7 @@ app.get('/api/rooms/:roomId/sync-state', (req, res) => {
     members: room.members,
     aiMessages,
     pamphlets,
+    aiThinking: roomAIThinking.get(room.id) || { isThinking: false },
   });
 });
 
@@ -551,7 +556,8 @@ async function processIncomingChatMessage(
   senderName: string,
   senderAvatarBg?: string,
   customMsgId?: string,
-  clientMode?: AIMode
+  clientMode?: AIMode,
+  replyTo?: ReplyToInfo
 ): Promise<ChatMessage> {
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
@@ -566,6 +572,7 @@ async function processIncomingChatMessage(
     timestamp: timeFormatted,
     createdAt: now.toISOString(),
     isSelf: false,
+    replyTo,
   };
 
   if (!roomMessages.has(roomId)) {
@@ -589,14 +596,19 @@ async function processIncomingChatMessage(
     const effectiveMode: AIMode = isDeep ? 'complex' : clientMode || 'simple';
 
     (async () => {
-      // Broadcast live thinking state
-      broadcastToRoom(roomId, {
-        type: 'ai-thinking',
-        roomId,
+      const thinkingState: AIThinkingState = {
         isThinking: true,
         question: prompt,
         userName: senderName,
         mode: effectiveMode,
+      };
+      roomAIThinking.set(roomId, thinkingState);
+
+      // Broadcast live thinking state
+      broadcastToRoom(roomId, {
+        type: 'ai-thinking',
+        roomId,
+        ...thinkingState,
       });
 
       try {
@@ -617,6 +629,7 @@ async function processIncomingChatMessage(
             message: prompt,
             createdAt: timeFormatted,
             mode: effectiveMode,
+            replyTo,
           };
           if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
           roomAIMessages.get(roomId)!.push(userAiMsg);
@@ -633,6 +646,12 @@ async function processIncomingChatMessage(
           aiSources = result.sources;
         }
 
+        const autoReplyTo: ReplyToInfo = replyTo || {
+          id: userChatMessage.id,
+          senderName: userChatMessage.senderName,
+          content: prompt || userChatMessage.content,
+        };
+
         // Create AI message in the main chat room
         const aiChatMessage: ChatMessage = {
           id: `msg-ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -645,6 +664,7 @@ async function processIncomingChatMessage(
           createdAt: new Date().toISOString(),
           isSelf: false,
           isAI: true,
+          replyTo: autoReplyTo,
         };
 
         roomMessages.get(roomId)!.push(aiChatMessage);
@@ -659,6 +679,7 @@ async function processIncomingChatMessage(
           createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
           sources: aiSources,
           mode: effectiveMode,
+          replyTo: autoReplyTo,
         };
         if (!roomAIMessages.has(roomId)) roomAIMessages.set(roomId, []);
         roomAIMessages.get(roomId)!.push(aiHistoryMsg);
@@ -692,6 +713,11 @@ async function processIncomingChatMessage(
           createdAt: new Date().toISOString(),
           isSelf: false,
           isAI: true,
+          replyTo: {
+            id: userChatMessage.id,
+            senderName: userChatMessage.senderName,
+            content: userChatMessage.content,
+          },
         };
         if (!roomMessages.has(roomId)) roomMessages.set(roomId, []);
         roomMessages.get(roomId)!.push(errChatMessage);
@@ -701,6 +727,7 @@ async function processIncomingChatMessage(
           message: errChatMessage,
         });
       } finally {
+        roomAIThinking.set(roomId, { isThinking: false });
         broadcastToRoom(roomId, {
           type: 'ai-thinking',
           roomId,
@@ -824,6 +851,8 @@ async function handleAIChatRequest(
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false });
 
+  const replyToParam: ReplyToInfo | undefined = req.body?.replyTo;
+
   // 6. Create and save User's question
   const userMsg: AIMessage = {
     id: `aimsg-${Date.now()}-u`,
@@ -836,6 +865,7 @@ async function handleAIChatRequest(
     image: imageAttachment ? imageAttachment.data : undefined,
     createdAt: timeFormatted,
     mode: aiMode,
+    replyTo: replyToParam,
   };
 
   if (!roomAIMessages.has(room.id)) roomAIMessages.set(room.id, []);
@@ -849,14 +879,19 @@ async function handleAIChatRequest(
     message: userMsg,
   });
 
-  // Broadcast live thinking state across the room
-  broadcastToRoom(room.id, {
-    type: 'ai-thinking',
-    roomId: room.id,
+  const thinkingState: AIThinkingState = {
     isThinking: true,
     question: cleanQ || 'تحلیل تصویر',
     userName,
     mode: aiMode,
+  };
+  roomAIThinking.set(room.id, thinkingState);
+
+  // Broadcast live thinking state across the room
+  broadcastToRoom(room.id, {
+    type: 'ai-thinking',
+    roomId: room.id,
+    ...thinkingState,
   });
 
   // 7. Query Gemini with strict Room Isolation (only pamphlets of this room)
@@ -870,6 +905,13 @@ async function handleAIChatRequest(
       imageAttachment
     );
 
+    const autoReplyTo: ReplyToInfo = replyToParam || {
+      id: userMsg.id,
+      senderName: userMsg.sender,
+      content: userMsg.message,
+      isAI: false,
+    };
+
     const aiMsg: AIMessage = {
       id: `aimsg-${Date.now()}-ai`,
       roomId: room.id,
@@ -879,6 +921,7 @@ async function handleAIChatRequest(
       createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       sources: aiAnswer.sources,
       mode: aiMode,
+      replyTo: autoReplyTo,
     };
 
     roomAIMessages.get(room.id)!.push(aiMsg);
@@ -902,6 +945,12 @@ async function handleAIChatRequest(
     const fallbackText =
       'دستیار هوشمند به دلیل ترافیک لحظه‌ای سرورهای مدل با تاخیر مواجه شد. لطفاً چند ثانیه دیگر دوباره تلاش کنید.';
 
+    const autoReplyTo: ReplyToInfo = replyToParam || {
+      id: userMsg.id,
+      senderName: userMsg.sender,
+      content: userMsg.message,
+    };
+
     const aiMsg: AIMessage = {
       id: `aimsg-${Date.now()}-ai`,
       roomId: room.id,
@@ -910,6 +959,7 @@ async function handleAIChatRequest(
       message: fallbackText,
       createdAt: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', hour12: false }),
       mode: aiMode,
+      replyTo: autoReplyTo,
     };
 
     if (!roomAIMessages.has(room.id)) roomAIMessages.set(room.id, []);
@@ -928,6 +978,7 @@ async function handleAIChatRequest(
       aiMsg,
     });
   } finally {
+    roomAIThinking.set(room.id, { isThinking: false });
     broadcastToRoom(room.id, {
       type: 'ai-thinking',
       roomId: room.id,

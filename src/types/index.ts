@@ -38,6 +38,13 @@ export interface RoomData {
   members: RoomMember[];
 }
 
+export interface ReplyToInfo {
+  id: string;
+  senderName: string;
+  content: string;
+  isAI?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   roomId: string;
@@ -50,6 +57,7 @@ export interface ChatMessage {
   createdAt?: string;
   isSelf: boolean;
   isAI?: boolean;
+  replyTo?: ReplyToInfo;
   attachment?: {
     name: string;
     size: string;
@@ -80,6 +88,7 @@ export interface AIMessage {
   sources?: string[];
   mode?: AIMode;
   isGenerating?: boolean;
+  replyTo?: ReplyToInfo;
 }
 
 // Keep AIMessageItem as an alias or backward-compat representation
@@ -137,8 +146,8 @@ export type ModalType = 'none' | 'create-room' | 'join-room' | 'name-entry';
 export type WSClientMessage =
   | { type: 'join-room'; roomId: string; user: { id: string; name: string; avatarBg?: string } }
   | { type: 'leave-room'; roomId: string; userId: string }
-  | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string }; mode?: AIMode }
-  | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string } }
+  | { type: 'send-message'; roomId: string; message: { id: string; content: string; senderId: string; senderName: string; senderAvatarBg?: string; replyTo?: ReplyToInfo }; mode?: AIMode }
+  | { type: 'ai-ask'; roomId: string; question: string; mode?: AIMode; user: { id: string; name: string; avatarBg?: string }; replyTo?: ReplyToInfo }
   | { type: 'voice-state-update'; roomId: string; userId: string; isSpeaking?: boolean; isMuted?: boolean; isCallActive: boolean }
   | { type: 'voice-signal'; roomId: string; senderId: string; targetUserId: string; signal: any }
   | { type: 'voice-audio-chunk'; roomId: string; userId: string; chunk: string; mimeType: string }

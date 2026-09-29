@@ -11,6 +11,7 @@ import {
   RoomMember,
   AIMode,
   AIThinkingState,
+  ReplyToInfo,
 } from '../types';
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
@@ -44,6 +45,8 @@ interface StudyRoomContextType {
   aiMode: AIMode;
   setAiMode: (mode: AIMode) => void;
   aiThinking: AIThinkingState;
+  replyingToMessage: ReplyToInfo | null;
+  setReplyingToMessage: (info: ReplyToInfo | null) => void;
   voiceState: VoiceState;
   connectionStatus: ConnectionStatus;
   isLoadingMessages: boolean;
@@ -134,6 +137,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
 
   const [aiThinking, setAiThinking] = useState<AIThinkingState>({ isThinking: false });
+  const [replyingToMessage, setReplyingToMessage] = useState<ReplyToInfo | null>(null);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
@@ -502,7 +506,6 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
         return history;
       });
-      setIsAskingAI(false);
     });
 
     const unsubAIThinking = chatService.onAIThinking((thinkingState) => {
@@ -958,6 +961,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const raw = content.trim();
     if (!raw) return false;
 
+    const currentReplyTo = replyingToMessage || undefined;
+
     // Detect if user is asking AI via /ai or @ai or /هوش or ai/
     const isAICommand = /^([/@]ai|ai\/|\/هوش)\b/i.test(raw);
     if (isAICommand) {
@@ -971,7 +976,11 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     }
 
-    return chatService.sendMessage(raw, aiMode);
+    const sent = chatService.sendMessage(raw, aiMode, currentReplyTo);
+    if (sent) {
+      setReplyingToMessage(null);
+    }
+    return sent;
   };
 
   // Shared Room AI Question with selectable mode (simple vs complex)
@@ -979,7 +988,9 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const cleanQ = question.trim();
     if (!cleanQ || isAskingAI) return;
 
+    const currentReplyTo = replyingToMessage || undefined;
     const modeToUse = overrideMode || aiMode;
+
     setIsAskingAI(true);
     setAiThinking({
       isThinking: true,
@@ -988,8 +999,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       mode: modeToUse,
     });
 
-    const success = await chatService.askAI(cleanQ, modeToUse);
-    if (!success) {
+    const success = await chatService.askAI(cleanQ, modeToUse, currentReplyTo);
+    if (success) {
+      setReplyingToMessage(null);
+    } else {
       setIsAskingAI(false);
       setAiThinking({ isThinking: false });
     }
@@ -1005,6 +1018,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const cleanQ = question.trim();
     const modeToUse = overrideMode || aiMode;
+    const currentReplyTo = replyingToMessage || undefined;
 
     setIsAskingAI(true);
     setAiThinking({
@@ -1017,8 +1031,10 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const reader = new FileReader();
     reader.onload = async () => {
       const base64Data = reader.result as string;
-      const success = await chatService.askAIVision(cleanQ, base64Data, file.type, modeToUse);
-      if (!success) {
+      const success = await chatService.askAIVision(cleanQ, base64Data, file.type, modeToUse, currentReplyTo);
+      if (success) {
+        setReplyingToMessage(null);
+      } else {
         setIsAskingAI(false);
         setAiThinking({ isThinking: false });
       }
@@ -1448,6 +1464,8 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         aiMode,
         setAiMode,
         aiThinking,
+        replyingToMessage,
+        setReplyingToMessage,
         voiceState,
         connectionStatus,
         isLoadingMessages,
